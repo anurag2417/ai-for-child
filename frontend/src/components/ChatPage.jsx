@@ -8,7 +8,9 @@ const BOT_AVATAR = "https://static.prod-images.emergentagent.com/jobs/c981f2d7-a
 
 export default function ChatPage() {
   const [conversations, setConversations] = useState([]);
-  const [activeConvId, setActiveConvId] = useState(null);
+  const [activeConvId, setActiveConvId] = useState(() => {
+    return localStorage.getItem("buddybot_active_conv") || null;
+  });
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -22,6 +24,15 @@ export default function ChatPage() {
 
   useEffect(() => { scrollToBottom(); }, [messages]);
 
+  // Persist active conversation
+  useEffect(() => {
+    if (activeConvId) {
+      localStorage.setItem("buddybot_active_conv", activeConvId);
+    } else {
+      localStorage.removeItem("buddybot_active_conv");
+    }
+  }, [activeConvId]);
+
   const fetchConversations = useCallback(async () => {
     try {
       const res = await axios.get(`${API}/chat/conversations`);
@@ -30,6 +41,14 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => { fetchConversations(); }, [fetchConversations]);
+
+  // Restore conversation on mount
+  useEffect(() => {
+    if (activeConvId) {
+      loadConversation(activeConvId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const loadConversation = async (convId) => {
     setActiveConvId(convId);
@@ -44,6 +63,7 @@ export default function ChatPage() {
     setActiveConvId(null);
     setMessages([]);
     setInput("");
+    localStorage.removeItem("buddybot_active_conv");
     inputRef.current?.focus();
   };
 
