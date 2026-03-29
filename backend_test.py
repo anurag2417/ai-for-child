@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 
 class BuddyBotAPITester:
-    def __init__(self, base_url="https://problem-breakdown-2.preview.emergentagent.com"):
+    def __init__(self, base_url="https://get-restart.preview.emergentagent.com"):
         self.base_url = f"{base_url}/api"
         self.tests_run = 0
         self.tests_passed = 0
