@@ -218,38 +218,347 @@ async def notify_parent_of_alert(alert_doc: dict, child_id: str = None):
 
 
 # ============================================================
-# PROFANITY / SAFETY FILTER
+# PROFANITY / SAFETY FILTER WITH FUZZY MATCHING
 # ============================================================
-BLOCKED_WORDS = [
-    "kill", "murder", "suicide", "die", "dead", "blood", "gun", "weapon",
-    "knife", "bomb", "shoot", "stab", "drug", "cocaine", "heroin", "meth",
-    "weed", "marijuana", "alcohol", "beer", "wine", "vodka", "cigarette",
-    "smoke", "vape", "sex", "porn", "nude", "naked", "ass", "damn",
-    "hell", "shit", "fuck", "bitch", "bastard", "crap", "dick", "pussy",
-    "slut", "whore", "rape", "abuse", "torture", "hate", "racist",
-    "terrorism", "terrorist", "hack", "exploit"
-]
 
-RESTRICTED_TOPICS = {
-    "violence": ["fight", "hit", "punch", "kick", "hurt", "attack", "war", "battle", "destroy", "weapon", "gun", "knife", "bomb", "kill", "murder", "blood", "shoot", "stab"],
-    "privacy": ["address", "phone number", "credit card", "password", "social security", "where do you live", "my name is", "my school", "my teacher", "home address", "bank account"],
-    "adult_content": ["sex", "porn", "nude", "naked", "dating", "boyfriend", "girlfriend", "kiss", "love making"],
-    "substance": ["drug", "alcohol", "beer", "wine", "smoke", "vape", "cigarette", "weed", "marijuana", "cocaine"],
-    "self_harm": ["suicide", "kill myself", "cut myself", "hurt myself", "die", "don't want to live", "end my life"]
+# Comprehensive blocked words list - organized by category
+BLOCKED_WORDS_BY_CATEGORY = {
+    "profanity": [
+        # Common swear words and variations
+        "fuck", "shit", "ass", "asshole", "bitch", "bastard", "damn", "crap",
+        "dick", "cock", "pussy", "cunt", "twat", "prick", "bollocks", "wanker",
+        "slut", "whore", "hoe", "skank", "tramp", "fag", "faggot", "dyke",
+        "retard", "retarded", "spaz", "moron", "idiot", "stupid", "dumb",
+        "piss", "pissed", "bloody", "bugger", "arse", "arsehole", "tosser",
+        "douchebag", "douche", "jackass", "dipshit", "shithead", "asshat",
+        "motherfucker", "fucker", "bullshit", "horseshit", "goddam", "goddamn",
+        "hell", "damnit", "screw", "screwed", "suck", "sucks", "sucked",
+        "wtf", "stfu", "lmao", "lmfao", "omfg", "fml", "af"
+    ],
+    "violence": [
+        # Weapons
+        "gun", "rifle", "pistol", "shotgun", "firearm", "weapon", "knife",
+        "blade", "sword", "machete", "axe", "bomb", "explosive", "grenade",
+        "missile", "bullet", "ammo", "ammunition", "trigger", "caliber",
+        # Violence actions
+        "kill", "murder", "assassinate", "slaughter", "massacre", "execute",
+        "shoot", "stab", "slash", "strangle", "choke", "suffocate", "drown",
+        "beat", "punch", "kick", "attack", "assault", "hurt", "harm", "injure",
+        "torture", "mutilate", "dismember", "decapitate", "behead", "hang",
+        # Violence outcomes
+        "die", "death", "dead", "blood", "bleed", "bleeding", "gore", "gory",
+        "corpse", "body", "murder", "homicide", "genocide", "massacre",
+        # Threats
+        "threat", "threaten", "revenge", "avenge", "destroy", "annihilate",
+        "eliminate", "exterminate", "obliterate", "demolish"
+    ],
+    "adult_content": [
+        # Sexual terms
+        "sex", "sexual", "sexy", "porn", "porno", "pornography", "xxx",
+        "nude", "naked", "nudity", "strip", "stripper", "striptease",
+        "erotic", "erotica", "fetish", "kink", "kinky", "bdsm", "bondage",
+        "orgasm", "orgasmic", "climax", "horny", "aroused", "arousal",
+        "masturbate", "masturbation", "jerk", "wank", "fap",
+        "penis", "vagina", "boob", "boobs", "breast", "breasts", "tit", "tits",
+        "butt", "buttocks", "genitals", "genital", "testicle", "testicles",
+        # Sexual acts
+        "intercourse", "fornicate", "fornication", "copulate", "copulation",
+        "blowjob", "handjob", "fingering", "oral", "anal",
+        # Adult industry
+        "escort", "prostitute", "prostitution", "hooker", "brothel",
+        "onlyfans", "camgirl", "webcam", "livecam", "chaturbate",
+        # Dating/romantic (mild but flagged for children)
+        "hookup", "onenight", "fwb", "nudes", "sext", "sexting"
+    ],
+    "substances": [
+        # Drugs
+        "drug", "drugs", "cocaine", "coke", "crack", "heroin", "meth",
+        "methamphetamine", "amphetamine", "ecstasy", "mdma", "molly",
+        "lsd", "acid", "shrooms", "mushrooms", "psilocybin", "dmt",
+        "ketamine", "pcp", "angel dust", "fentanyl", "opium", "opioid",
+        "morphine", "codeine", "oxycodone", "hydrocodone", "percocet",
+        "xanax", "adderall", "ritalin", "valium", "barbiturate",
+        # Cannabis
+        "weed", "marijuana", "cannabis", "pot", "joint", "blunt", "bong",
+        "edible", "thc", "cbd", "dab", "dabbing", "stoner", "420",
+        # Alcohol
+        "alcohol", "beer", "wine", "vodka", "whiskey", "whisky", "rum",
+        "tequila", "gin", "brandy", "bourbon", "scotch", "liquor", "booze",
+        "drunk", "wasted", "hammered", "plastered", "intoxicated", "tipsy",
+        "hangover", "binge", "binging", "chug", "shots", "cocktail",
+        # Tobacco
+        "cigarette", "cigar", "tobacco", "nicotine", "smoke", "smoking",
+        "vape", "vaping", "juul", "e-cig", "ecigarette",
+        # Drug actions
+        "high", "stoned", "tripping", "overdose", "inject", "snort", "dealer"
+    ],
+    "self_harm": [
+        # Self-harm
+        "suicide", "suicidal", "kill myself", "end my life", "end it all",
+        "want to die", "wanna die", "wish i was dead", "better off dead",
+        "cut myself", "cutting", "self harm", "selfharm", "self-harm",
+        "hurt myself", "hurting myself", "harm myself", "harming myself",
+        "slit wrist", "slit wrists", "hang myself", "hanging myself",
+        "overdose", "take pills", "jump off", "jump from",
+        # Depression indicators
+        "worthless", "hopeless", "no reason to live", "nobody cares",
+        "everyone hates me", "no point", "give up", "giving up",
+        "cant go on", "can't go on", "dont want to live", "don't want to live",
+        "life is pointless", "meaningless", "empty inside"
+    ],
+    "cyberbullying": [
+        # Direct insults
+        "loser", "ugly", "fat", "skinny", "freak", "weirdo", "nerd", "geek",
+        "dork", "lame", "pathetic", "worthless", "useless", "stupid", "dumb",
+        "idiot", "moron", "imbecile", "creep", "creepy", "gross", "disgusting",
+        # Exclusion
+        "nobody likes you", "no friends", "unfriend", "blocked", "ignored",
+        "go away", "leave me alone", "unwanted", "rejected", "outcast",
+        # Threats
+        "gonna get you", "watch out", "you'll regret", "you're dead",
+        "gonna beat", "gonna hurt", "i'll find you", "tell everyone",
+        "spread rumors", "embarrass you", "expose you", "leak your",
+        # Harassment
+        "harass", "harassment", "bully", "bullying", "stalk", "stalking",
+        "troll", "trolling", "spam", "spamming", "doxx", "doxxing",
+        "catfish", "catfishing", "ghosting", "cancel", "cancelled"
+    ],
+    "hate_speech": [
+        # Racial slurs (partial - many removed for sensitivity)
+        "racist", "racism", "racial", "negro", "nigga", "nigger", "cracker",
+        "wetback", "beaner", "chink", "gook", "jap", "spic", "kike",
+        # Religious hate
+        "islamophobe", "antisemite", "antisemitic", "christophobe",
+        # LGBTQ hate
+        "homophobe", "homophobic", "transphobe", "transphobic",
+        "fag", "faggot", "dyke", "tranny", "shemale",
+        # General hate
+        "hate", "hater", "hating", "despise", "detest", "loathe",
+        "supremacist", "supremacy", "nazi", "hitler", "fascist",
+        "bigot", "bigotry", "prejudice", "discriminate", "discrimination",
+        "xenophobe", "xenophobic", "misogynist", "misogyny",
+        # Slurs
+        "retard", "retarded", "cripple", "handicapped", "midget"
+    ],
+    "dangerous_activities": [
+        # Dangerous challenges
+        "challenge", "dare", "choking game", "blackout challenge",
+        "tide pod", "cinnamon challenge", "salt and ice", "fire challenge",
+        # Illegal activities
+        "hack", "hacking", "hacker", "exploit", "crack", "pirate", "piracy",
+        "steal", "stealing", "theft", "rob", "robbing", "burglary",
+        "shoplift", "shoplifting", "vandal", "vandalism", "graffiti",
+        # Terrorism
+        "terrorist", "terrorism", "terror", "jihad", "isis", "al qaeda",
+        "bomb threat", "mass shooting", "shooting", "hostage",
+        # Predatory
+        "predator", "grooming", "molest", "pedophile", "pedo", "kidnap"
+    ]
 }
 
+# Flatten all blocked words into a single list
+BLOCKED_WORDS = []
+for category_words in BLOCKED_WORDS_BY_CATEGORY.values():
+    BLOCKED_WORDS.extend(category_words)
+BLOCKED_WORDS = list(set(BLOCKED_WORDS))  # Remove duplicates
+
+RESTRICTED_TOPICS = {
+    "violence": BLOCKED_WORDS_BY_CATEGORY["violence"],
+    "privacy": [
+        "address", "phone number", "credit card", "password", "social security",
+        "where do you live", "my name is", "my school", "my teacher", "home address",
+        "bank account", "ssn", "pin number", "birth certificate", "drivers license",
+        "license plate", "ip address", "full name", "last name", "birthday",
+        "where i live", "come to my house", "meet me at", "meet up"
+    ],
+    "adult_content": BLOCKED_WORDS_BY_CATEGORY["adult_content"],
+    "substance": BLOCKED_WORDS_BY_CATEGORY["substances"],
+    "self_harm": BLOCKED_WORDS_BY_CATEGORY["self_harm"],
+    "cyberbullying": BLOCKED_WORDS_BY_CATEGORY["cyberbullying"],
+    "hate_speech": BLOCKED_WORDS_BY_CATEGORY["hate_speech"],
+    "dangerous_activities": BLOCKED_WORDS_BY_CATEGORY["dangerous_activities"]
+}
+
+# Common character substitutions (leetspeak)
+CHAR_SUBSTITUTIONS = {
+    '@': 'a', '4': 'a', '^': 'a',
+    '8': 'b',
+    '(': 'c', '<': 'c',
+    '3': 'e',
+    '6': 'g', '9': 'g',
+    '#': 'h',
+    '1': 'i', '!': 'i', '|': 'i',
+    '0': 'o',
+    '5': 's', '$': 's',
+    '+': 't',
+    'v': 'u',
+    'w': 'vv',
+    '><': 'x',
+    '¥': 'y',
+    '2': 'z',
+}
+
+def normalize_leetspeak(text: str) -> str:
+    """Convert leetspeak/character substitutions to regular letters."""
+    result = text.lower()
+    for leet, normal in CHAR_SUBSTITUTIONS.items():
+        result = result.replace(leet, normal)
+    # Remove repeated characters (e.g., "fuuuuck" -> "fuck")
+    result = re.sub(r'(.)\1{2,}', r'\1\1', result)
+    # Remove common separators used to bypass filters (e.g., "f.u.c.k" -> "fuck")
+    result = re.sub(r'[\.\-_\*\s]+', '', result)
+    return result
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate the Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    
+    previous_row = range(len(s2) + 1)
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    return previous_row[-1]
+
+def fuzzy_match_word(word: str, blocked_words: list, max_distance: int = 2) -> tuple:
+    """
+    Check if a word fuzzy-matches any blocked word.
+    Returns (is_match, matched_word, distance)
+    """
+    word_normalized = normalize_leetspeak(word)
+    
+    # Skip very short words to avoid false positives
+    if len(word_normalized) < 3:
+        return (False, None, -1)
+    
+    for blocked in blocked_words:
+        blocked_normalized = blocked.lower()
+        
+        # Exact match after normalization
+        if word_normalized == blocked_normalized:
+            return (True, blocked, 0)
+        
+        # Check if blocked word is contained in the word
+        if blocked_normalized in word_normalized and len(blocked_normalized) >= 3:
+            return (True, blocked, 0)
+        
+        # Fuzzy matching with Levenshtein distance
+        # Adjust max distance based on word length for better accuracy
+        effective_max_distance = min(max_distance, max(1, len(blocked_normalized) // 3))
+        
+        distance = levenshtein_distance(word_normalized, blocked_normalized)
+        if distance <= effective_max_distance:
+            return (True, blocked, distance)
+    
+    return (False, None, -1)
+
 def check_profanity(text: str) -> dict:
+    """
+    Check text for profanity with fuzzy matching support.
+    Handles misspellings, leetspeak, and character substitutions.
+    """
     text_lower = text.lower()
-    matched = [w for w in BLOCKED_WORDS if re.search(r'\b' + re.escape(w) + r'\b', text_lower)]
-    return {"is_blocked": len(matched) > 0, "matched_words": matched}
+    text_normalized = normalize_leetspeak(text_lower)
+    matched = []
+    fuzzy_matched = []
+    
+    # Extract words from text
+    words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
+    
+    # Also check the normalized version for phrases
+    words_normalized = re.findall(r'[a-z]+', text_normalized)
+    
+    all_words = set(words + words_normalized)
+    
+    for word in all_words:
+        # Skip very short words
+        if len(word) < 3:
+            continue
+            
+        # Check exact match first (faster)
+        word_normalized = normalize_leetspeak(word)
+        
+        for blocked in BLOCKED_WORDS:
+            blocked_lower = blocked.lower()
+            
+            # Exact match
+            if word_normalized == blocked_lower or word.lower() == blocked_lower:
+                if blocked not in matched:
+                    matched.append(blocked)
+                break
+            
+            # Substring match for longer blocked words
+            if len(blocked_lower) >= 4 and blocked_lower in word_normalized:
+                if blocked not in matched:
+                    matched.append(blocked)
+                break
+        
+        # Fuzzy match if no exact match found
+        if word not in [m.lower() for m in matched]:
+            is_match, blocked_word, distance = fuzzy_match_word(word, BLOCKED_WORDS, max_distance=2)
+            if is_match and blocked_word not in matched and blocked_word not in fuzzy_matched:
+                fuzzy_matched.append(blocked_word)
+    
+    # Combine results
+    all_matched = matched + fuzzy_matched
+    
+    # Get categories for matched words
+    matched_categories = {}
+    for word in all_matched:
+        word_lower = word.lower()
+        for category, words_list in BLOCKED_WORDS_BY_CATEGORY.items():
+            if word_lower in [w.lower() for w in words_list]:
+                if category not in matched_categories:
+                    matched_categories[category] = []
+                matched_categories[category].append(word)
+                break
+    
+    return {
+        "is_blocked": len(all_matched) > 0,
+        "matched_words": all_matched,
+        "fuzzy_matched": fuzzy_matched,
+        "exact_matched": matched,
+        "categories": matched_categories
+    }
 
 def check_restricted_topics(text: str) -> dict:
+    """
+    Check text for restricted topics with fuzzy matching support.
+    """
     text_lower = text.lower()
+    text_normalized = normalize_leetspeak(text_lower)
     flagged = {}
+    
     for category, phrases in RESTRICTED_TOPICS.items():
-        matches = [p for p in phrases if p in text_lower]
+        matches = []
+        for phrase in phrases:
+            phrase_lower = phrase.lower()
+            
+            # Check exact phrase match
+            if phrase_lower in text_lower or phrase_lower in text_normalized:
+                if phrase not in matches:
+                    matches.append(phrase)
+                continue
+            
+            # For single words, do fuzzy matching
+            if ' ' not in phrase and len(phrase) >= 3:
+                words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
+                for word in words:
+                    is_match, _, _ = fuzzy_match_word(word, [phrase], max_distance=2)
+                    if is_match and phrase not in matches:
+                        matches.append(phrase)
+                        break
+        
         if matches:
             flagged[category] = matches
+    
     return flagged
 
 
@@ -577,11 +886,21 @@ async def send_message(data: MessageCreate):
         await db.messages.insert_one(user_msg)
         user_msg.pop("_id", None)
 
+        # Build detailed alert with categories
+        categories_str = ""
+        if profanity_result.get("categories"):
+            categories_str = f" Categories: {', '.join(profanity_result['categories'].keys())}."
+        fuzzy_note = ""
+        if profanity_result.get("fuzzy_matched"):
+            fuzzy_note = f" (Fuzzy matches detected: {', '.join(profanity_result['fuzzy_matched'])})"
+        
         alert_doc = {
             "id": str(uuid.uuid4()), "conversation_id": conversation_id,
             "message_id": user_msg["id"], "type": "profanity", "severity": "high",
-            "details": f"Blocked words detected: {', '.join(profanity_result['matched_words'])}",
+            "details": f"Blocked words detected: {', '.join(profanity_result['matched_words'])}.{categories_str}{fuzzy_note}",
             "child_message": data.text,
+            "categories": profanity_result.get("categories", {}),
+            "fuzzy_matched": profanity_result.get("fuzzy_matched", []),
             "created_at": datetime.now(timezone.utc).isoformat(), "resolved": False
         }
         await db.alerts.insert_one(alert_doc)
@@ -692,19 +1011,32 @@ async def receive_packets(batch: PacketBatch):
             restricted = check_restricted_topics(packet.search_query)
             doc["profanity_flagged"] = profanity["is_blocked"]
             doc["profanity_words"] = profanity["matched_words"]
+            doc["profanity_categories"] = profanity.get("categories", {})
+            doc["fuzzy_matched"] = profanity.get("fuzzy_matched", [])
             doc["restricted_topics"] = restricted if restricted else None
             if profanity["is_blocked"] or restricted:
                 severity = "high" if profanity["is_blocked"] else "medium"
+                
+                # Build detailed alert message
+                categories_info = ""
+                if profanity.get("categories"):
+                    categories_info = f" | Categories: {', '.join(profanity['categories'].keys())}"
+                fuzzy_info = ""
+                if profanity.get("fuzzy_matched"):
+                    fuzzy_info = f" | Fuzzy matches: {profanity['fuzzy_matched']}"
+                
                 alert = {
                     "id": str(uuid.uuid4()), "type": "browsing_alert", "severity": severity,
                     "device_id": batch.device_id,
-                    "details": f"Flagged search: \"{packet.search_query}\" on {packet.search_engine or 'browser'}",
+                    "details": f"Flagged search: \"{packet.search_query}\" on {packet.search_engine or 'browser'}{categories_info}{fuzzy_info}",
                     "child_message": packet.search_query, "tab_type": packet.tab_type,
                     "url": packet.url, "created_at": datetime.now(timezone.utc).isoformat(),
-                    "resolved": False, "source": "extension"
+                    "resolved": False, "source": "extension",
+                    "categories": profanity.get("categories", {}),
+                    "fuzzy_matched": profanity.get("fuzzy_matched", [])
                 }
                 if restricted: alert["details"] += f" | Topics: {list(restricted.keys())}"
-                if profanity["is_blocked"]: alert["details"] += f" | Blocked words: {profanity['matched_words']}"
+                if profanity["is_blocked"] and not categories_info: alert["details"] += f" | Blocked words: {profanity['matched_words']}"
                 alerts_to_create.append(alert)
         docs.append(doc)
     if docs:
