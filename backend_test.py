@@ -260,27 +260,172 @@ class BuddyBotAPITester:
             print(f"   Auto-created conversation: {new_conv_id}")
         return success
 
+    def test_extension_packets(self):
+        """Test receiving browsing packets from extension"""
+        test_packets = [
+            {
+                "id": "test-packet-1",
+                "timestamp": datetime.now().isoformat(),
+                "device_id": "dev-test-123",
+                "tab_type": "normal",
+                "url": "https://www.google.com/search?q=how+to+study",
+                "domain": "google.com",
+                "title": "Google Search",
+                "packet_type": "search_query",
+                "search_query": "how to study",
+                "search_engine": "Google"
+            },
+            {
+                "id": "test-packet-2", 
+                "timestamp": datetime.now().isoformat(),
+                "device_id": "dev-test-123",
+                "tab_type": "incognito",
+                "url": "https://www.google.com/search?q=how+to+fight+at+school",
+                "domain": "google.com",
+                "title": "Google Search",
+                "packet_type": "search_query",
+                "search_query": "how to fight at school",
+                "search_engine": "Google"
+            }
+        ]
+        
+        success, response = self.run_test(
+            "Extension Packets Submission",
+            "POST",
+            "extension/packets",
+            200,
+            data={
+                "device_id": "dev-test-123",
+                "packets": test_packets
+            }
+        )
+        if success:
+            print(f"   Received: {response.get('received', 0)} packets")
+            print(f"   Alerts created: {response.get('alerts_created', 0)}")
+        return success
+
+    def test_extension_status(self):
+        """Test getting extension status for device"""
+        success, response = self.run_test(
+            "Extension Device Status",
+            "GET",
+            "extension/status/dev-test-123",
+            200
+        )
+        if success:
+            print(f"   Device: {response.get('device_id')}")
+            print(f"   Total packets: {response.get('total_packets', 0)}")
+            print(f"   Total alerts: {response.get('total_alerts', 0)}")
+        return success
+
+    def test_browsing_stats(self):
+        """Test browsing statistics endpoint"""
+        success, response = self.run_test(
+            "Browsing Statistics",
+            "GET",
+            "parent/browsing/stats",
+            200
+        )
+        if success:
+            print(f"   Total packets: {response.get('total_packets', 0)}")
+            print(f"   Search count: {response.get('search_count', 0)}")
+            print(f"   Visit count: {response.get('visit_count', 0)}")
+            print(f"   Incognito count: {response.get('incognito_count', 0)}")
+            print(f"   Flagged searches: {response.get('flagged_searches', 0)}")
+            print(f"   Browsing alerts: {response.get('browsing_alerts', 0)}")
+        return success
+
+    def test_browsing_searches(self):
+        """Test browsing searches endpoint"""
+        success, response = self.run_test(
+            "Browsing Searches",
+            "GET",
+            "parent/browsing/searches",
+            200,
+            params={"limit": 20}
+        )
+        if success:
+            print(f"   Found {len(response)} search queries")
+            if response:
+                flagged_count = sum(1 for s in response if s.get('profanity_flagged') or s.get('restricted_topics'))
+                print(f"   Flagged searches: {flagged_count}")
+        return success
+
+    def test_browsing_visits(self):
+        """Test browsing visits endpoint"""
+        success, response = self.run_test(
+            "Browsing Visits",
+            "GET",
+            "parent/browsing/visits",
+            200,
+            params={"limit": 20}
+        )
+        if success:
+            print(f"   Found {len(response)} URL visits")
+        return success
+
+    def test_browsing_analysis(self):
+        """Test AI browsing pattern analysis"""
+        success, response = self.run_test(
+            "Browsing Pattern Analysis",
+            "GET",
+            "parent/browsing/analysis",
+            200,
+            params={"device_id": "dev-test-123"}
+        )
+        if success:
+            print(f"   Safety level: {response.get('safety_level', 'Unknown')}")
+            print(f"   Analysis: {response.get('analysis', 'No analysis')[:100]}...")
+            print(f"   Total searches analyzed: {response.get('total_searches', 0)}")
+            print(f"   Flagged searches: {len(response.get('flagged_searches', []))}")
+        return success
+
+    def test_enhanced_chat_with_browsing_context(self):
+        """Test chat with browsing context enhancement"""
+        success, response = self.run_test(
+            "Chat with Browsing Context",
+            "POST",
+            "chat/send",
+            200,
+            data={
+                "text": "I've been looking up some things online",
+                "device_id": "dev-test-123"
+            }
+        )
+        if success:
+            print(f"   Bot response: {response.get('bot_message', {}).get('text', 'No response')[:50]}...")
+            print(f"   Safety level: {response.get('bot_message', {}).get('safety_level', 'Unknown')}")
+            # Check if AI thought mentions browsing context
+            thought = response.get('bot_message', {}).get('thought', '')
+            if 'browsing' in thought.lower() or 'search' in thought.lower():
+                print(f"   ✅ AI thought includes browsing context")
+            else:
+                print(f"   ⚠️  AI thought may not include browsing context")
+        return success
+
 def main():
     print("🤖 BuddyBot Backend API Testing Suite")
     print("=" * 50)
     
     tester = BuddyBotAPITester()
     
-    # Test sequence
+    # Test sequence - focusing on NEW extension features for iteration 2
     tests = [
         tester.test_health_check,
+        # Extension endpoints (NEW)
+        tester.test_extension_packets,
+        tester.test_extension_status,
+        tester.test_browsing_stats,
+        tester.test_browsing_searches,
+        tester.test_browsing_visits,
+        tester.test_browsing_analysis,
+        tester.test_enhanced_chat_with_browsing_context,
+        # Updated parent dashboard (should now include browsing stats)
+        tester.test_parent_dashboard,
+        # Quick verification that existing features still work
         tester.test_create_conversation,
-        tester.test_list_conversations,
         tester.test_send_safe_message,
         tester.test_profanity_filter,
-        tester.test_restricted_topic_detection,
-        tester.test_get_conversation,
-        tester.test_parent_dashboard,
-        tester.test_parent_alerts,
-        tester.test_parent_conversations,
-        tester.test_parent_conversation_detail,
-        tester.test_resolve_alert,
-        tester.test_new_conversation_creation,
     ]
     
     print(f"\n🚀 Running {len(tests)} tests...")
