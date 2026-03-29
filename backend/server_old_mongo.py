@@ -227,7 +227,7 @@ BLOCKED_WORDS_BY_CATEGORY = {
         # Common swear words and variations
         "fuck", "shit", "ass", "asshole", "bitch", "bastard", "damn", "crap",
         "dick", "cock", "pussy", "cunt", "twat", "prick", "bollocks", "wanker",
-        "slut", "whore", "hoe", "skank", "tramp", "fag", "faggot", "dyke",
+        "slut", "whore", "skank", "tramp", "fag", "faggot", "dyke",
         "retard", "retarded", "spaz", "moron", "imbecile",
         "piss", "pissed", "bloody", "bugger", "arse", "arsehole", "tosser",
         "douchebag", "douche", "jackass", "dipshit", "shithead", "asshat",
@@ -238,8 +238,8 @@ BLOCKED_WORDS_BY_CATEGORY = {
     "violence": [
         # Weapons
         "gun", "rifle", "pistol", "shotgun", "firearm", "weapon", "knife",
-        "blade", "sword", "machete", "axe", "bomb", "explosive", "grenade",
-        "missile", "bullet", "ammo", "ammunition", "trigger", "caliber",
+        "blade", "machete", "axe", "bomb", "explosive", "grenade",
+        "missile", "bullet", "ammo", "ammunition", "caliber",
         # Violence actions
         "kill", "murder", "assassinate", "slaughter", "massacre", "execute",
         "shoot", "stab", "slash", "strangle", "choke", "suffocate", "drown",
@@ -248,9 +248,7 @@ BLOCKED_WORDS_BY_CATEGORY = {
         # Violence outcomes
         "die", "death", "dead", "blood", "bleed", "bleeding", "gore", "gory",
         "corpse", "body", "murder", "homicide", "genocide", "massacre",
-        # Threats
-        "threat", "threaten", "revenge", "avenge", "destroy", "annihilate",
-        "eliminate", "exterminate", "obliterate", "demolish"
+        
     ],
     "adult_content": [
         # Sexual terms
