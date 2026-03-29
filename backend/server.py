@@ -295,7 +295,7 @@ BLOCKED_WORDS_BY_CATEGORY = {
     ],
     "violence": [
         "gun", "rifle", "pistol", "shotgun", "firearm", "weapon", "knife",
-        "blade", "sword", "machete", "axe", "bomb", "explosive", "grenade",
+        "blade", "machete", "axe", "bomb", "explosive", "grenade",
         "missile", "bullet", "ammo", "ammunition", "trigger", "caliber",
         "kill", "murder", "assassinate", "slaughter", "massacre", "execute",
         "shoot", "stab", "slash", "strangle", "choke", "suffocate", "drown",
@@ -558,46 +558,40 @@ def check_profanity(text: str) -> dict:
     }
 
 def check_restricted_topics(text: str) -> dict:
+    """
+    Check text for restricted topics using EXACT MATCH ONLY.
+    No fuzzy matching - only exact word/phrase matches trigger flags.
+    This prevents false positives on safe words like 'word', 'friend', etc.
+    """
     text_lower = text.lower()
-    text_normalized = normalize_leetspeak(text_lower)
     flagged = {}
+    
     category_priority = ["self_harm", "violence", "adult_content", "substance", 
                          "cyberbullying", "hate_speech", "dangerous_activities", "privacy"]
+    
+    # Extract words from text for exact matching
+    words_in_text = set(re.findall(r'\b[a-zA-Z]+\b', text_lower))
     
     for category in category_priority:
         if category not in RESTRICTED_TOPICS:
             continue
         phrases = RESTRICTED_TOPICS[category]
         matches = []
+        
         for phrase in phrases:
             phrase_lower = phrase.lower()
+            
+            # Multi-word phrase: check if entire phrase exists in text
             if ' ' in phrase_lower:
-                if phrase_lower in text_lower or phrase_lower in text_normalized:
+                if phrase_lower in text_lower:
                     if phrase not in matches:
                         matches.append(phrase)
-        if matches:
-            flagged[category] = matches
-    
-    for category in category_priority:
-        if category not in RESTRICTED_TOPICS:
-            continue
-        phrases = RESTRICTED_TOPICS[category]
-        matches = flagged.get(category, [])
-        for phrase in phrases:
-            phrase_lower = phrase.lower()
-            if ' ' in phrase_lower:
-                continue
-            if phrase_lower in text_lower or phrase_lower in text_normalized:
-                if phrase not in matches:
-                    matches.append(phrase)
-                continue
-            if len(phrase) >= 3:
-                words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
-                for word in words:
-                    is_match, _, _ = fuzzy_match_word(word, [phrase], max_distance=2)
-                    if is_match and phrase not in matches:
+            else:
+                # Single word: EXACT match only (word must be in text as complete word)
+                if phrase_lower in words_in_text:
+                    if phrase not in matches:
                         matches.append(phrase)
-                        break
+        
         if matches:
             flagged[category] = matches
     

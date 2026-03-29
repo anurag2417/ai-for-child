@@ -69,39 +69,14 @@ export default function ExtensionSetup() {
 
   const handleManualConfirm = async () => {
     // Generate a device ID for manual confirmation
-    const manualDeviceId = `manual_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    const manualDeviceId = `device_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     await confirmExtension(manualDeviceId);
   };
 
   const handleCheckExtension = async () => {
-    setChecking(true);
-    setError("");
-    
-    // Try to detect extension by sending a message
-    try {
-      window.postMessage({ type: "BUDDYBOT_CHECK_EXTENSION" }, "*");
-      
-      // Wait for response
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          reject(new Error("Extension not detected"));
-        }, 3000);
-        
-        const handler = (event) => {
-          if (event.data && event.data.type === "BUDDYBOT_EXTENSION_INSTALLED") {
-            clearTimeout(timeout);
-            window.removeEventListener("message", handler);
-            resolve(event.data);
-          }
-        };
-        
-        window.addEventListener("message", handler);
-      });
-    } catch {
-      // Extension not responding - show manual confirmation option
-      setStep(3);
-      setChecking(false);
-    }
+    // Skip auto-detection and just go to manual confirmation
+    // Browser extensions can't easily communicate with web pages without specific setup
+    await handleManualConfirm();
   };
 
   return (
