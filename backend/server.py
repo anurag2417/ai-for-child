@@ -4,9 +4,11 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from fastapi import FastAPI, APIRouter, HTTPException, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Response, Depends
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update, func, desc
+from sqlalchemy.orm import selectinload
 import os
 import logging
 import re
@@ -21,10 +23,9 @@ from typing import List, Optional, Dict
 from emergentintegrations.llm.chat import LlmChat, UserMessage
 import httpx
 
-# MongoDB
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+# Import database and models
+from database import get_db, engine, Base
+from models import User, ChildProfile, Conversation, Message, Alert, BrowsingPacket
 
 # LLM
 EMERGENT_LLM_KEY = os.environ['EMERGENT_LLM_KEY']
@@ -73,7 +74,8 @@ def set_auth_cookies(response: Response, access_token: str, refresh_token: str):
     response.set_cookie(key="refresh_token", value=refresh_token, httponly=True, secure=True, samesite="none", max_age=604800, path="/")
 
 
-async def get_current_user(request: Request) -> dict:
+async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+    """Get current authenticated user from JWT token."""
     token = request.cookies.get("access_token")
     if not token:
         auth_header = request.headers.get("Authorization", "")
@@ -85,10 +87,11 @@ async def get_current_user(request: Request) -> dict:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Invalid token type")
-        user = await db.users.find_one({"user_id": payload["sub"]}, {"_id": 0})
+        
+        result = await db.execute(select(User).where(User.id == payload["sub"]))
+        user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-        user.pop("password_hash", None)
         return user
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
@@ -128,7 +131,7 @@ class MessageCreate(BaseModel):
 class ConversationCreate(BaseModel):
     title: Optional[str] = "New Chat"
 
-class BrowsingPacket(BaseModel):
+class BrowsingPacketModel(BaseModel):
     id: str
     timestamp: str
     device_id: str
@@ -142,7 +145,7 @@ class BrowsingPacket(BaseModel):
 
 class PacketBatch(BaseModel):
     device_id: str
-    packets: List[BrowsingPacket]
+    packets: List[BrowsingPacketModel]
 
 
 # ============================================================
@@ -196,24 +199,27 @@ async def send_alert_email(parent_email: str, parent_name: str, alert_type: str,
         logger.error(f"Failed to send alert email to {parent_email}: {e}")
 
 
-async def notify_parent_of_alert(alert_doc: dict, child_id: str = None):
+async def notify_parent_of_alert(db: AsyncSession, alert_data: dict, child_id: str = None):
     """Find the parent and send them an alert email."""
     parent = None
     if child_id:
-        child = await db.child_profiles.find_one({"child_id": child_id}, {"_id": 0})
+        result = await db.execute(select(ChildProfile).where(ChildProfile.id == child_id))
+        child = result.scalar_one_or_none()
         if child:
-            parent = await db.users.find_one({"user_id": child["parent_id"]}, {"_id": 0})
+            result = await db.execute(select(User).where(User.id == child.parent_id))
+            parent = result.scalar_one_or_none()
     if not parent:
         # Try to find any parent (single-parent setup)
-        parent = await db.users.find_one({}, {"_id": 0})
-    if parent and parent.get("email"):
+        result = await db.execute(select(User).limit(1))
+        parent = result.scalar_one_or_none()
+    if parent and parent.email:
         await send_alert_email(
-            parent_email=parent["email"],
-            parent_name=parent.get("name", "Parent"),
-            alert_type=alert_doc.get("type", "safety_alert"),
-            details=alert_doc.get("details", ""),
-            child_message=alert_doc.get("child_message", ""),
-            severity=alert_doc.get("severity", "medium")
+            parent_email=parent.email,
+            parent_name=parent.name or "Parent",
+            alert_type=alert_data.get("type", "safety_alert"),
+            details=alert_data.get("details", ""),
+            child_message=alert_data.get("child_message", ""),
+            severity=alert_data.get("severity", "medium")
         )
 
 
@@ -224,7 +230,6 @@ async def notify_parent_of_alert(alert_doc: dict, child_id: str = None):
 # Comprehensive blocked words list - organized by category
 BLOCKED_WORDS_BY_CATEGORY = {
     "profanity": [
-        # Common swear words and variations
         "fuck", "shit", "ass", "asshole", "bitch", "bastard", "damn", "crap",
         "dick", "cock", "pussy", "cunt", "twat", "prick", "bollocks", "wanker",
         "slut", "whore", "hoe", "skank", "tramp", "fag", "faggot", "dyke",
@@ -232,28 +237,22 @@ BLOCKED_WORDS_BY_CATEGORY = {
         "piss", "pissed", "bloody", "bugger", "arse", "arsehole", "tosser",
         "douchebag", "douche", "jackass", "dipshit", "shithead", "asshat",
         "motherfucker", "fucker", "bullshit", "horseshit", "goddam", "goddamn",
-        "damnit", "screwed",
-        "wtf", "stfu", "omfg", "fml"
+        "damnit", "screwed", "wtf", "stfu", "omfg", "fml"
     ],
     "violence": [
-        # Weapons
         "gun", "rifle", "pistol", "shotgun", "firearm", "weapon", "knife",
         "blade", "sword", "machete", "axe", "bomb", "explosive", "grenade",
         "missile", "bullet", "ammo", "ammunition", "trigger", "caliber",
-        # Violence actions
         "kill", "murder", "assassinate", "slaughter", "massacre", "execute",
         "shoot", "stab", "slash", "strangle", "choke", "suffocate", "drown",
         "beat", "punch", "kick", "attack", "assault", "hurt", "harm", "injure",
         "torture", "mutilate", "dismember", "decapitate", "behead", "hang",
-        # Violence outcomes
         "die", "death", "dead", "blood", "bleed", "bleeding", "gore", "gory",
-        "corpse", "body", "murder", "homicide", "genocide", "massacre",
-        # Threats
+        "corpse", "body", "homicide", "genocide",
         "threat", "threaten", "revenge", "avenge", "destroy", "annihilate",
         "eliminate", "exterminate", "obliterate", "demolish"
     ],
     "adult_content": [
-        # Sexual terms
         "sex", "sexual", "sexy", "porn", "porno", "pornography", "xxx",
         "nude", "naked", "nudity", "strip", "stripper", "striptease",
         "erotic", "erotica", "fetish", "kink", "kinky", "bdsm", "bondage",
@@ -261,106 +260,82 @@ BLOCKED_WORDS_BY_CATEGORY = {
         "masturbate", "masturbation", "jerk", "wank", "fap",
         "penis", "vagina", "boob", "boobs", "breast", "breasts", "tit", "tits",
         "butt", "buttocks", "genitals", "genital", "testicle", "testicles",
-        # Sexual acts
         "intercourse", "fornicate", "fornication", "copulate", "copulation",
         "blowjob", "handjob", "fingering", "oral", "anal",
-        # Adult industry
         "escort", "prostitute", "prostitution", "hooker", "brothel",
         "onlyfans", "camgirl", "webcam", "livecam", "chaturbate",
-        # Dating/romantic (mild but flagged for children)
         "hookup", "onenight", "fwb", "nudes", "sext", "sexting"
     ],
     "substances": [
-        # Drugs
         "drug", "drugs", "cocaine", "coke", "crack", "heroin", "meth",
         "methamphetamine", "amphetamine", "ecstasy", "mdma", "molly",
         "lsd", "acid", "shrooms", "mushrooms", "psilocybin", "dmt",
-        "ketamine", "pcp", "angel dust", "fentanyl", "opium", "opioid",
+        "ketamine", "pcp", "fentanyl", "opium", "opioid",
         "morphine", "codeine", "oxycodone", "hydrocodone", "percocet",
         "xanax", "adderall", "ritalin", "valium", "barbiturate",
-        # Cannabis
         "weed", "marijuana", "cannabis", "pot", "joint", "blunt", "bong",
         "edible", "thc", "cbd", "stoner", "420",
-        # Alcohol
         "alcohol", "beer", "wine", "vodka", "whiskey", "whisky", "rum",
         "tequila", "gin", "brandy", "bourbon", "scotch", "liquor", "booze",
         "drunk", "wasted", "hammered", "plastered", "intoxicated", "tipsy",
-        "hangover", "binge", "binging", "chug", "shots", "cocktail",
-        # Tobacco
+        "hangover", "binge", "binging", "chug", "shots",
         "cigarette", "cigar", "tobacco", "nicotine", "smoke", "smoking",
-        "vape", "vaping", "juul", "e-cig", "ecigarette",
-        # Drug actions
+        "vape", "vaping", "juul",
         "high", "stoned", "tripping", "overdose", "inject", "snort", "dealer"
     ],
     "self_harm": [
-        # Self-harm
         "suicide", "suicidal", "kill myself", "end my life", "end it all",
         "want to die", "wanna die", "wish i was dead", "better off dead",
         "cut myself", "cutting", "self harm", "selfharm", "self-harm",
         "hurt myself", "hurting myself", "harm myself", "harming myself",
         "slit wrist", "slit wrists", "hang myself", "hanging myself",
         "overdose", "take pills", "jump off", "jump from",
-        # Depression indicators
         "worthless", "hopeless", "no reason to live", "nobody cares",
         "everyone hates me", "no point", "give up", "giving up",
         "cant go on", "can't go on", "dont want to live", "don't want to live",
         "life is pointless", "meaningless", "empty inside"
     ],
     "cyberbullying": [
-        # Direct insults
         "loser", "ugly", "freak", "weirdo", "nerd", "geek",
         "dork", "lame", "pathetic", "worthless", "useless",
         "idiot", "moron", "imbecile", "creep", "creepy", "gross", "disgusting",
-        # Exclusion
         "nobody likes you", "no friends", "unfriend", "blocked", "ignored",
         "go away", "leave me alone", "unwanted", "rejected", "outcast",
-        # Threats
         "gonna get you", "watch out", "you'll regret", "you're dead",
         "gonna beat", "gonna hurt", "i'll find you", "tell everyone",
         "spread rumors", "embarrass you", "expose you", "leak your",
-        # Harassment
         "harass", "harassment", "bully", "bullying", "stalk", "stalking",
         "troll", "trolling", "spam", "spamming", "doxx", "doxxing",
         "catfish", "catfishing", "ghosting", "cancel", "cancelled"
     ],
     "hate_speech": [
-        # Racial slurs (partial - many removed for sensitivity)
         "racist", "racism", "racial", "negro", "nigga", "nigger", "cracker",
         "wetback", "beaner", "chink", "gook", "jap", "spic", "kike",
-        # Religious hate
         "islamophobe", "antisemite", "antisemitic", "christophobe",
-        # LGBTQ hate
         "homophobe", "homophobic", "transphobe", "transphobic",
         "fag", "faggot", "dyke", "tranny", "shemale",
-        # General hate
         "hate", "hater", "hating", "despise", "detest", "loathe",
         "supremacist", "supremacy", "nazi", "hitler", "fascist",
         "bigot", "bigotry", "prejudice", "discriminate", "discrimination",
         "xenophobe", "xenophobic", "misogynist", "misogyny",
-        # Slurs
         "retard", "retarded", "cripple", "handicapped", "midget"
     ],
     "dangerous_activities": [
-        # Dangerous challenges
         "challenge", "dare", "choking game", "blackout challenge",
         "tide pod", "cinnamon challenge", "salt and ice", "fire challenge",
-        # Illegal activities
-        "hack", "hacking", "hacker", "exploit", "crack", "pirate", "piracy",
+        "hack", "hacking", "hacker", "exploit", "pirate", "piracy",
         "steal", "stealing", "theft", "rob", "robbing", "burglary",
         "shoplift", "shoplifting", "vandal", "vandalism", "graffiti",
-        # Terrorism
         "terrorist", "terrorism", "terror", "jihad", "isis", "al qaeda",
         "bomb threat", "mass shooting", "shooting", "hostage",
-        # Predatory
         "predator", "grooming", "molest", "pedophile", "pedo", "kidnap"
     ]
 }
 
-# Flatten all blocked words into a single list
 BLOCKED_WORDS = []
 for category_words in BLOCKED_WORDS_BY_CATEGORY.values():
     BLOCKED_WORDS.extend(category_words)
-BLOCKED_WORDS = list(set(BLOCKED_WORDS))  # Remove duplicates
+BLOCKED_WORDS = list(set(BLOCKED_WORDS))
 
 RESTRICTED_TOPICS = {
     "violence": BLOCKED_WORDS_BY_CATEGORY["violence"],
@@ -379,43 +354,45 @@ RESTRICTED_TOPICS = {
     "dangerous_activities": BLOCKED_WORDS_BY_CATEGORY["dangerous_activities"]
 }
 
-# Common character substitutions (leetspeak)
 CHAR_SUBSTITUTIONS = {
-    '@': 'a', '4': 'a', '^': 'a',
-    '8': 'b',
-    '(': 'c', '<': 'c',
-    '3': 'e',
-    '6': 'g', '9': 'g',
-    '#': 'h',
-    '1': 'i', '!': 'i', '|': 'i',
-    '0': 'o',
-    '5': 's', '$': 's',
-    '+': 't',
-    'v': 'u',
-    'w': 'vv',
-    '><': 'x',
-    '¥': 'y',
-    '2': 'z',
+    '@': 'a', '4': 'a', '^': 'a', '8': 'b', '(': 'c', '<': 'c',
+    '3': 'e', '6': 'g', '9': 'g', '#': 'h', '1': 'i', '!': 'i', '|': 'i',
+    '0': 'o', '5': 's', '$': 's', '+': 't', 'v': 'u', '><': 'x', '¥': 'y', '2': 'z',
+}
+
+SAFE_WORDS = {
+    'shell', 'classic', 'classics', 'class', 'assassin', 'assess', 'assistant',
+    'associate', 'assume', 'assignment', 'passionate', 'compass',
+    'assault', 'grass', 'glass', 'pass', 'mass', 'bass', 'brass',
+    'cocktail', 'peacock', 'hancock', 'woodcock', 'shuttlecock',
+    'scunthorpe', 'hello', 'shelling', 'shellfish',
+    'analysis', 'analyst', 'analyzed', 'analytical',
+    'title', 'titled', 'titles', 'titillate', 'titian',
+    'thatch', 'thanks', 'that', 'the', 'them', 'then', 'there',
+    'butterscotch', 'scratch', 'watch', 'catch', 'match',
+    'executing', 'execution', 'execute', 'executive',
+    'document', 'documents', 'documented',
+    'cracked', 'cracker', 'crackers', 'cracking', 'firecracker',
+    'its', 'hits', 'bits', 'kits', 'sits', 'fits', 'pits', 'wits',
+    'classwork', 'classroom', 'classification', 'classical',
+    'assassinate', 'assassinated', 'assassinating',
+    'beautiful', 'beautifully', 'beauty', 'day', 'days', 'today',
+    'database', 'dabble'
 }
 
 def normalize_leetspeak(text: str) -> str:
-    """Convert leetspeak/character substitutions to regular letters."""
     result = text.lower()
     for leet, normal in CHAR_SUBSTITUTIONS.items():
         result = result.replace(leet, normal)
-    # Remove repeated characters (e.g., "fuuuuck" -> "fuck")
     result = re.sub(r'(.)\1{2,}', r'\1\1', result)
-    # Remove common separators used to bypass filters (e.g., "f.u.c.k" -> "fuck")
     result = re.sub(r'[\.\-_\*\s]+', '', result)
     return result
 
 def levenshtein_distance(s1: str, s2: str) -> int:
-    """Calculate the Levenshtein distance between two strings."""
     if len(s1) < len(s2):
         return levenshtein_distance(s2, s1)
     if len(s2) == 0:
         return len(s1)
-    
     previous_row = range(len(s2) + 1)
     for i, c1 in enumerate(s1):
         current_row = [i + 1]
@@ -428,136 +405,65 @@ def levenshtein_distance(s1: str, s2: str) -> int:
     return previous_row[-1]
 
 def fuzzy_match_word(word: str, blocked_words: list, max_distance: int = 2) -> tuple:
-    """
-    Check if a word fuzzy-matches any blocked word.
-    Returns (is_match, matched_word, distance)
-    Uses moderate strictness to balance safety vs false positives.
-    """
     word_normalized = normalize_leetspeak(word)
-    
-    # Skip very short words to avoid false positives
     if len(word_normalized) < 3:
         return (False, None, -1)
-    
     for blocked in blocked_words:
         blocked_normalized = blocked.lower()
-        
-        # Skip if word lengths are too different (prevents "cute" matching "execute")
         length_diff = abs(len(word_normalized) - len(blocked_normalized))
         if length_diff > 2:
             continue
-        
-        # Exact match after normalization
         if word_normalized == blocked_normalized:
             return (True, blocked, 0)
-        
-        # Check if blocked word equals word with prefix/suffix (but not arbitrary containment)
-        # This prevents "hello" matching "hell" but allows "shitty" matching "shit"
         if len(blocked_normalized) >= 4:
-            # Word starts with blocked word and only has 1-2 extra chars
             if word_normalized.startswith(blocked_normalized) and len(word_normalized) - len(blocked_normalized) <= 2:
                 return (True, blocked, 0)
-            # Word ends with blocked word and only has 1-2 extra chars  
             if word_normalized.endswith(blocked_normalized) and len(word_normalized) - len(blocked_normalized) <= 2:
                 return (True, blocked, 0)
-        
-        # Calculate Levenshtein distance
         distance = levenshtein_distance(word_normalized, blocked_normalized)
-        
-        # For very short words (3-4 chars), only allow distance of 1 and same length
         if len(blocked_normalized) <= 4:
             if distance == 1 and length_diff <= 1:
                 return (True, blocked, distance)
-        # For medium words (5-6 chars), allow distance of 1-2 with similar length
         elif len(blocked_normalized) <= 6:
             if distance <= 1 and length_diff <= 1:
                 return (True, blocked, distance)
-        # For longer words, use proportional distance
         else:
             effective_max_distance = min(max_distance, max(1, len(blocked_normalized) // 4))
             if distance <= effective_max_distance and length_diff <= 2:
                 return (True, blocked, distance)
-    
     return (False, None, -1)
 
 def check_profanity(text: str) -> dict:
-    """
-    Check text for profanity with fuzzy matching support.
-    Handles misspellings, leetspeak, and character substitutions.
-    Uses moderate strictness to balance safety vs false positives.
-    """
     text_lower = text.lower()
     text_normalized = normalize_leetspeak(text_lower)
     matched = []
     fuzzy_matched = []
-    
-    # Common safe words that might trigger false positives
-    SAFE_WORDS = {
-        'shell', 'classic', 'classics', 'class', 'assassin', 'assess', 'assistant',
-        'associate', 'assume', 'assignment', 'passionate', 'compass',
-        'assault', 'grass', 'glass', 'pass', 'mass', 'bass', 'brass',
-        'cocktail', 'peacock', 'hancock', 'woodcock', 'shuttlecock',
-        'scunthorpe', 'hello', 'shell', 'shelling', 'shellfish',
-        'analysis', 'analyst', 'analyzed', 'analytical',
-        'title', 'titled', 'titles', 'titillate', 'titian',
-        'thatch', 'thanks', 'that', 'the', 'them', 'then', 'there',
-        'butterscotch', 'scratch', 'watch', 'catch', 'match',
-        'executing', 'execution', 'execute', 'executive',
-        'document', 'documents', 'documented',
-        'cracked', 'cracker', 'crackers', 'cracking', 'firecracker',
-        'its', 'hits', 'bits', 'kits', 'sits', 'fits', 'pits', 'wits',
-        'classwork', 'classroom', 'classification', 'classical',
-        'assassinate', 'assassinated', 'assassinating',
-        'beautiful', 'beautifully', 'beauty', 'day', 'days', 'today',
-        'database', 'dabble', 'dab'  # 'dab' as drug slang only in specific contexts
-    }
-    
-    # Extract words from text (split by whitespace and common punctuation)
     words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
-    
-    # Also check the normalized version
     words_normalized = re.findall(r'[a-z]+', text_normalized)
-    
     all_words = set(words + words_normalized)
     
     for word in all_words:
-        # Skip very short words
         if len(word) < 3:
             continue
-        
-        # Skip known safe words
         if word.lower() in SAFE_WORDS:
             continue
-            
         word_normalized = normalize_leetspeak(word)
-        
-        # Skip if normalized word is a safe word
         if word_normalized in SAFE_WORDS:
             continue
-        
         word_matched = False
-        
         for blocked in BLOCKED_WORDS:
             blocked_lower = blocked.lower()
-            
-            # Skip if word lengths are too different
             length_diff = abs(len(word_normalized) - len(blocked_lower))
             if length_diff > 3:
                 continue
-            
-            # Exact match (highest priority)
             if word_normalized == blocked_lower or word.lower() == blocked_lower:
                 if blocked not in matched:
                     matched.append(blocked)
                 word_matched = True
                 break
-            
-            # Word is a variant with suffix (e.g., "fucking" matches "fuck")
-            # Require the blocked word to be at least 4 chars and be significant portion
             if len(blocked_lower) >= 4:
                 if word_normalized.startswith(blocked_lower):
                     extra_chars = len(word_normalized) - len(blocked_lower)
-                    # Only allow common suffixes (ing, ed, er, s, y, ly)
                     if extra_chars <= 3:
                         suffix = word_normalized[len(blocked_lower):]
                         if suffix in ['', 's', 'y', 'ed', 'er', 'ing', 'ly', 'ish', 'ness']:
@@ -565,8 +471,6 @@ def check_profanity(text: str) -> dict:
                                 matched.append(blocked)
                             word_matched = True
                             break
-            
-            # Check for leetspeak variations with 1 char difference (for short words)
             if len(blocked_lower) <= 5 and len(word_normalized) <= 6 and length_diff <= 1:
                 dist = levenshtein_distance(word_normalized, blocked_lower)
                 if dist == 1:
@@ -574,19 +478,13 @@ def check_profanity(text: str) -> dict:
                         matched.append(blocked)
                     word_matched = True
                     break
-        
-        # Fuzzy match if no exact/near-exact match found
         if not word_matched:
             is_match, blocked_word, distance = fuzzy_match_word(word, BLOCKED_WORDS, max_distance=2)
             if is_match and blocked_word not in matched and blocked_word not in fuzzy_matched:
-                # Double check it's not a safe word being matched
                 if word.lower() not in SAFE_WORDS and word_normalized not in SAFE_WORDS:
                     fuzzy_matched.append(blocked_word)
     
-    # Combine results
     all_matched = matched + fuzzy_matched
-    
-    # Get categories for matched words
     matched_categories = {}
     for word in all_matched:
         word_lower = word.lower()
@@ -606,19 +504,12 @@ def check_profanity(text: str) -> dict:
     }
 
 def check_restricted_topics(text: str) -> dict:
-    """
-    Check text for restricted topics with fuzzy matching support.
-    Prioritizes phrase matching before individual word matching.
-    """
     text_lower = text.lower()
     text_normalized = normalize_leetspeak(text_lower)
     flagged = {}
-    
-    # Priority order for categories (self_harm should be checked first for phrases like "want to die")
     category_priority = ["self_harm", "violence", "adult_content", "substance", 
                          "cyberbullying", "hate_speech", "dangerous_activities", "privacy"]
     
-    # First pass: Check for multi-word phrases (higher priority)
     for category in category_priority:
         if category not in RESTRICTED_TOPICS:
             continue
@@ -626,37 +517,26 @@ def check_restricted_topics(text: str) -> dict:
         matches = []
         for phrase in phrases:
             phrase_lower = phrase.lower()
-            
-            # Multi-word phrase matching (highest priority)
             if ' ' in phrase_lower:
                 if phrase_lower in text_lower or phrase_lower in text_normalized:
                     if phrase not in matches:
                         matches.append(phrase)
-        
         if matches:
             flagged[category] = matches
     
-    # Second pass: Check for single words with fuzzy matching
     for category in category_priority:
         if category not in RESTRICTED_TOPICS:
             continue
         phrases = RESTRICTED_TOPICS[category]
         matches = flagged.get(category, [])
-        
         for phrase in phrases:
             phrase_lower = phrase.lower()
-            
-            # Skip multi-word phrases (already handled above)
             if ' ' in phrase_lower:
                 continue
-            
-            # Check exact single word match
             if phrase_lower in text_lower or phrase_lower in text_normalized:
                 if phrase not in matches:
                     matches.append(phrase)
                 continue
-            
-            # For single words, do fuzzy matching
             if len(phrase) >= 3:
                 words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
                 for word in words:
@@ -664,7 +544,6 @@ def check_restricted_topics(text: str) -> dict:
                     if is_match and phrase not in matches:
                         matches.append(phrase)
                         break
-        
         if matches:
             flagged[category] = matches
     
@@ -683,7 +562,6 @@ IMPORTANT: You must ALWAYS follow this ReAct thinking pattern internally before 
 - Is the child sharing personal information?
 - Is the child expressing distress or unsafe situations?
 - What's the emotional tone?
-- Consider the child's recent browsing history if provided
 
 **SAFETY_LEVEL**: Rate as SAFE, CAUTION, or ALERT
 
@@ -718,19 +596,32 @@ def parse_react_response(raw_response: str) -> dict:
     return {"thought": thought, "safety_level": safety_level, "response": response}
 
 
-async def get_browsing_context(device_id: str = None) -> str:
+async def get_browsing_context(db: AsyncSession, device_id: str = None) -> str:
     if not device_id:
-        latest = await db.browsing_packets.find_one({}, {"_id": 0, "device_id": 1}, sort=[("timestamp", -1)])
-        if latest: device_id = latest["device_id"]
-        else: return ""
-    recent_searches = await db.browsing_packets.find(
-        {"device_id": device_id, "packet_type": "search_query"}, {"_id": 0, "search_query": 1, "search_engine": 1, "timestamp": 1, "tab_type": 1}
-    ).sort("timestamp", -1).to_list(20)
-    if not recent_searches: return ""
+        result = await db.execute(
+            select(BrowsingPacket).order_by(desc(BrowsingPacket.timestamp)).limit(1)
+        )
+        latest = result.scalar_one_or_none()
+        if latest:
+            device_id = latest.device_id
+        else:
+            return ""
+    
+    result = await db.execute(
+        select(BrowsingPacket)
+        .where(BrowsingPacket.device_id == device_id, BrowsingPacket.packet_type == "search_query")
+        .order_by(desc(BrowsingPacket.timestamp))
+        .limit(20)
+    )
+    recent_searches = result.scalars().all()
+    
+    if not recent_searches:
+        return ""
+    
     context_parts = ["\n[BROWSING CONTEXT]:"]
     for s in recent_searches[:10]:
-        mode = " (INCOGNITO)" if s.get("tab_type") == "incognito" else ""
-        context_parts.append(f"  - \"{s['search_query']}\" on {s.get('search_engine', 'unknown')}{mode}")
+        mode = " (INCOGNITO)" if s.tab_type == "incognito" else ""
+        context_parts.append(f"  - \"{s.search_query}\" on {s.search_engine or 'unknown'}{mode}")
     return "\n".join(context_parts)
 
 
@@ -738,80 +629,84 @@ async def get_browsing_context(device_id: str = None) -> str:
 # AUTH ENDPOINTS
 # ============================================================
 @api_router.post("/auth/register")
-async def register(data: RegisterRequest, response: Response):
+async def register(data: RegisterRequest, response: Response, db: AsyncSession = Depends(get_db)):
     email = data.email.lower().strip()
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    
+    result = await db.execute(select(User).where(User.email == email))
+    existing = result.scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     if len(data.password) < 6:
         raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
 
-    user_id = f"user_{uuid.uuid4().hex[:12]}"
-    user_doc = {
-        "user_id": user_id,
-        "name": data.name,
-        "email": email,
-        "phone": data.phone or "",
-        "password_hash": hash_password(data.password),
-        "auth_provider": "email",
-        "role": "parent",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.users.insert_one(user_doc)
+    user = User(
+        email=email,
+        name=data.name,
+        phone=data.phone or "",
+        password_hash=hash_password(data.password),
+        auth_provider="email",
+        role="parent",
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
 
     # Create default child profile
-    child_id = f"child_{uuid.uuid4().hex[:12]}"
-    child_doc = {
-        "child_id": child_id,
-        "parent_id": user_id,
-        "name": f"{data.name}'s Child",
-        "age": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.child_profiles.insert_one(child_doc)
+    child = ChildProfile(
+        parent_id=user.id,
+        name=f"{data.name}'s Child",
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(child)
+    await db.commit()
+    await db.refresh(child)
 
-    access_token = create_access_token(user_id, email)
-    refresh_token = create_refresh_token(user_id)
+    access_token = create_access_token(user.id, email)
+    refresh_token = create_refresh_token(user.id)
     set_auth_cookies(response, access_token, refresh_token)
 
     return {
-        "user_id": user_id,
-        "name": data.name,
+        "user_id": user.id,
+        "name": user.name,
         "email": email,
-        "phone": data.phone or "",
+        "phone": user.phone or "",
         "role": "parent",
-        "child_id": child_id,
+        "child_id": child.id,
         "token": access_token,
     }
 
 
 @api_router.post("/auth/login")
-async def login(data: LoginRequest, response: Response):
+async def login(data: LoginRequest, response: Response, db: AsyncSession = Depends(get_db)):
     email = data.email.lower().strip()
-    user = await db.users.find_one({"email": email}, {"_id": 0})
+    
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    if not user.get("password_hash"):
+    if not user.password_hash:
         raise HTTPException(status_code=401, detail="This account uses Google login. Please sign in with Google.")
-    if not verify_password(data.password, user["password_hash"]):
+    if not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    access_token = create_access_token(user["user_id"], email)
-    refresh_token = create_refresh_token(user["user_id"])
+    access_token = create_access_token(user.id, email)
+    refresh_token = create_refresh_token(user.id)
     set_auth_cookies(response, access_token, refresh_token)
 
     return {
-        "user_id": user["user_id"],
-        "name": user["name"],
+        "user_id": user.id,
+        "name": user.name,
         "email": email,
-        "phone": user.get("phone", ""),
-        "role": user.get("role", "parent"),
+        "phone": user.phone or "",
+        "role": user.role or "parent",
         "token": access_token,
     }
 
 
 @api_router.post("/auth/google")
-async def google_auth(data: GoogleSessionRequest, response: Response):
+async def google_auth(data: GoogleSessionRequest, response: Response, db: AsyncSession = Depends(get_db)):
     """Exchange Emergent Google OAuth session_id for our JWT tokens."""
     try:
         async with httpx.AsyncClient() as http_client:
@@ -828,75 +723,76 @@ async def google_auth(data: GoogleSessionRequest, response: Response):
         raise HTTPException(status_code=500, detail=f"Google auth failed: {str(e)}")
 
     email = google_data["email"].lower()
-    existing = await db.users.find_one({"email": email}, {"_id": 0})
+    result = await db.execute(select(User).where(User.email == email))
+    existing = result.scalar_one_or_none()
 
     if existing:
-        user_id = existing["user_id"]
-        await db.users.update_one({"user_id": user_id}, {"$set": {
-            "name": google_data.get("name", existing["name"]),
-            "picture": google_data.get("picture", ""),
-        }})
+        existing.name = google_data.get("name", existing.name)
+        existing.picture = google_data.get("picture", "")
+        await db.commit()
+        user = existing
     else:
-        user_id = f"user_{uuid.uuid4().hex[:12]}"
-        user_doc = {
-            "user_id": user_id,
-            "name": google_data.get("name", "Parent"),
-            "email": email,
-            "phone": "",
-            "password_hash": None,
-            "auth_provider": "google",
-            "picture": google_data.get("picture", ""),
-            "role": "parent",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await db.users.insert_one(user_doc)
+        user = User(
+            email=email,
+            name=google_data.get("name", "Parent"),
+            phone="",
+            password_hash=None,
+            auth_provider="google",
+            picture=google_data.get("picture", ""),
+            role="parent",
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
 
-        child_id = f"child_{uuid.uuid4().hex[:12]}"
-        child_doc = {
-            "child_id": child_id,
-            "parent_id": user_id,
-            "name": f"{google_data.get('name', 'Parent')}'s Child",
-            "age": None,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-        await db.child_profiles.insert_one(child_doc)
+        child = ChildProfile(
+            parent_id=user.id,
+            name=f"{google_data.get('name', 'Parent')}'s Child",
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(child)
+        await db.commit()
 
-    access_token = create_access_token(user_id, email)
-    refresh_token = create_refresh_token(user_id)
+    access_token = create_access_token(user.id, email)
+    refresh_token = create_refresh_token(user.id)
     set_auth_cookies(response, access_token, refresh_token)
 
-    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
-    user.pop("password_hash", None)
-
     return {
-        "user_id": user_id,
-        "name": user.get("name"),
+        "user_id": user.id,
+        "name": user.name,
         "email": email,
-        "phone": user.get("phone", ""),
-        "role": user.get("role", "parent"),
+        "phone": user.phone or "",
+        "role": user.role or "parent",
         "token": access_token,
     }
 
 
 @api_router.get("/auth/me")
-async def auth_me(request: Request):
-    user = await get_current_user(request)
-    children = await db.child_profiles.find({"parent_id": user["user_id"]}, {"_id": 0}).to_list(20)
-    user["children"] = children
-    return user
+async def auth_me(request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    
+    result = await db.execute(select(ChildProfile).where(ChildProfile.parent_id == user.id))
+    children = result.scalars().all()
+    
+    return {
+        "user_id": user.id,
+        "name": user.name,
+        "email": user.email,
+        "phone": user.phone or "",
+        "role": user.role or "parent",
+        "picture": user.picture or "",
+        "children": [{"child_id": c.id, "name": c.name, "age": c.age} for c in children]
+    }
 
 
 @api_router.post("/auth/verify-password")
-async def verify_pwd(data: VerifyPasswordRequest, request: Request):
-    """Re-verify password for parent dashboard access."""
-    user = await get_current_user(request)
-    full_user = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0})
-    if not full_user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if not full_user.get("password_hash"):
+async def verify_pwd(data: VerifyPasswordRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    if not user.password_hash:
         # Google auth users - always allow dashboard access
         return {"verified": True}
-    if not verify_password(data.password, full_user["password_hash"]):
+    if not verify_password(data.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect password")
     return {"verified": True}
 
@@ -912,154 +808,273 @@ async def logout(response: Response):
 # CHILD PROFILE ENDPOINTS
 # ============================================================
 @api_router.get("/children")
-async def list_children(request: Request):
-    user = await get_current_user(request)
-    children = await db.child_profiles.find({"parent_id": user["user_id"]}, {"_id": 0}).to_list(20)
-    return children
+async def list_children(request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    result = await db.execute(select(ChildProfile).where(ChildProfile.parent_id == user.id))
+    children = result.scalars().all()
+    return [{"child_id": c.id, "parent_id": c.parent_id, "name": c.name, "age": c.age, "created_at": c.created_at.isoformat() if c.created_at else None} for c in children]
 
 
 @api_router.post("/children")
-async def create_child(data: ChildProfileCreate, request: Request):
-    user = await get_current_user(request)
-    child_id = f"child_{uuid.uuid4().hex[:12]}"
-    doc = {
-        "child_id": child_id,
-        "parent_id": user["user_id"],
-        "name": data.name,
-        "age": data.age,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.child_profiles.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
+async def create_child(data: ChildProfileCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    child = ChildProfile(
+        parent_id=user.id,
+        name=data.name,
+        age=data.age,
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(child)
+    await db.commit()
+    await db.refresh(child)
+    return {"child_id": child.id, "parent_id": child.parent_id, "name": child.name, "age": child.age, "created_at": child.created_at.isoformat()}
 
 
 # ============================================================
-# CHAT ENDPOINTS
+# CHAT ENDPOINTS (Requires Authentication)
 # ============================================================
 @api_router.post("/chat/conversations")
-async def create_conversation(data: ConversationCreate):
-    conv_id = str(uuid.uuid4())
-    doc = {
-        "id": conv_id, "title": data.title,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "message_count": 0, "has_flags": False, "flag_count": 0
+async def create_conversation(data: ConversationCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    conv = Conversation(
+        user_id=user.id,
+        title=data.title,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc)
+    )
+    db.add(conv)
+    await db.commit()
+    await db.refresh(conv)
+    return {
+        "id": conv.id,
+        "title": conv.title,
+        "created_at": conv.created_at.isoformat(),
+        "updated_at": conv.updated_at.isoformat(),
+        "message_count": 0,
+        "has_flags": False,
+        "flag_count": 0
     }
-    await db.conversations.insert_one(doc)
-    doc.pop("_id", None)
-    return doc
 
 
 @api_router.get("/chat/conversations")
-async def list_conversations():
-    convs = await db.conversations.find({}, {"_id": 0}).sort("updated_at", -1).to_list(100)
-    return convs
+async def list_conversations(request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.user_id == user.id)
+        .order_by(desc(Conversation.updated_at))
+    )
+    convs = result.scalars().all()
+    return [{
+        "id": c.id,
+        "title": c.title,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+        "message_count": c.message_count or 0,
+        "has_flags": c.has_flags or False,
+        "flag_count": c.flag_count or 0
+    } for c in convs]
 
 
 @api_router.get("/chat/conversations/{conversation_id}")
-async def get_conversation(conversation_id: str):
-    conv = await db.conversations.find_one({"id": conversation_id}, {"_id": 0})
+async def get_conversation(conversation_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id, Conversation.user_id == user.id)
+    )
+    conv = result.scalar_one_or_none()
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    messages = await db.messages.find({"conversation_id": conversation_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
-    return {"conversation": conv, "messages": messages}
+    
+    result = await db.execute(
+        select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)
+    )
+    messages = result.scalars().all()
+    
+    return {
+        "conversation": {
+            "id": conv.id,
+            "title": conv.title,
+            "created_at": conv.created_at.isoformat() if conv.created_at else None,
+            "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+            "message_count": conv.message_count or 0,
+            "has_flags": conv.has_flags or False,
+            "flag_count": conv.flag_count or 0
+        },
+        "messages": [{
+            "id": m.id,
+            "conversation_id": m.conversation_id,
+            "role": m.role,
+            "text": m.text,
+            "blocked": m.blocked or False,
+            "blocked_words": m.blocked_words,
+            "flagged_topics": m.flagged_topics,
+            "thought": m.thought,
+            "safety_level": m.safety_level,
+            "created_at": m.created_at.isoformat() if m.created_at else None
+        } for m in messages]
+    }
 
 
 @api_router.post("/chat/send")
-async def send_message(data: MessageCreate):
-    if not data.conversation_id:
-        conv_id = str(uuid.uuid4())
-        title = data.text[:40] + ("..." if len(data.text) > 40 else "")
-        conv_doc = {
-            "id": conv_id, "title": title,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "message_count": 0, "has_flags": False, "flag_count": 0,
-            "child_id": data.child_id
-        }
-        await db.conversations.insert_one(conv_doc)
-        data.conversation_id = conv_id
-
+async def send_message(data: MessageCreate, request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    
     conversation_id = data.conversation_id
+    
+    # Create new conversation if needed
+    if not conversation_id:
+        title = data.text[:40] + ("..." if len(data.text) > 40 else "")
+        conv = Conversation(
+            user_id=user.id,
+            child_id=data.child_id,
+            title=title,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc)
+        )
+        db.add(conv)
+        await db.commit()
+        await db.refresh(conv)
+        conversation_id = conv.id
+    else:
+        # Verify conversation belongs to user
+        result = await db.execute(
+            select(Conversation).where(Conversation.id == conversation_id, Conversation.user_id == user.id)
+        )
+        conv = result.scalar_one_or_none()
+        if not conv:
+            raise HTTPException(status_code=404, detail="Conversation not found")
 
     # Profanity check
     profanity_result = check_profanity(data.text)
+    
     if profanity_result["is_blocked"]:
-        user_msg = {
-            "id": str(uuid.uuid4()), "conversation_id": conversation_id,
-            "role": "user", "text": data.text,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "blocked": True, "blocked_words": profanity_result["matched_words"]
-        }
-        await db.messages.insert_one(user_msg)
-        user_msg.pop("_id", None)
+        # Save blocked user message
+        user_msg = Message(
+            conversation_id=conversation_id,
+            role="user",
+            text=data.text,
+            blocked=True,
+            blocked_words=profanity_result["matched_words"],
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(user_msg)
+        await db.commit()
+        await db.refresh(user_msg)
 
-        # Build detailed alert with categories
+        # Create alert
         categories_str = ""
         if profanity_result.get("categories"):
             categories_str = f" Categories: {', '.join(profanity_result['categories'].keys())}."
-        fuzzy_note = ""
-        if profanity_result.get("fuzzy_matched"):
-            fuzzy_note = f" (Fuzzy matches detected: {', '.join(profanity_result['fuzzy_matched'])})"
         
-        alert_doc = {
-            "id": str(uuid.uuid4()), "conversation_id": conversation_id,
-            "message_id": user_msg["id"], "type": "profanity", "severity": "high",
-            "details": f"Blocked words detected: {', '.join(profanity_result['matched_words'])}.{categories_str}{fuzzy_note}",
-            "child_message": data.text,
-            "categories": profanity_result.get("categories", {}),
-            "fuzzy_matched": profanity_result.get("fuzzy_matched", []),
-            "created_at": datetime.now(timezone.utc).isoformat(), "resolved": False
-        }
-        await db.alerts.insert_one(alert_doc)
-        alert_doc.pop("_id", None)
-
-        # Send email alert to parent
-        asyncio.create_task(notify_parent_of_alert(alert_doc, data.child_id))
-
-        await db.conversations.update_one(
-            {"id": conversation_id},
-            {"$set": {"has_flags": True, "updated_at": datetime.now(timezone.utc).isoformat()},
-             "$inc": {"message_count": 1, "flag_count": 1}}
+        alert = Alert(
+            conversation_id=conversation_id,
+            message_id=user_msg.id,
+            type="profanity",
+            severity="high",
+            details=f"Blocked words detected: {', '.join(profanity_result['matched_words'])}.{categories_str}",
+            child_message=data.text,
+            categories=profanity_result.get("categories", {}),
+            fuzzy_matched=profanity_result.get("fuzzy_matched", []),
+            created_at=datetime.now(timezone.utc)
         )
+        db.add(alert)
 
-        bot_msg = {
-            "id": str(uuid.uuid4()), "conversation_id": conversation_id,
-            "role": "assistant",
-            "text": "Hmm, let's use kind and friendly words! How about we talk about something fun instead? What's your favorite animal?",
-            "thought": "Profanity filter triggered. Blocked words detected in child's message.",
-            "safety_level": "ALERT",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+        # Update conversation
+        await db.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(
+                has_flags=True,
+                updated_at=datetime.now(timezone.utc),
+                message_count=Conversation.message_count + 1,
+                flag_count=Conversation.flag_count + 1
+            )
+        )
+        await db.commit()
+
+        # Send email alert
+        asyncio.create_task(notify_parent_of_alert(db, {
+            "type": "profanity",
+            "severity": "high",
+            "details": alert.details,
+            "child_message": data.text
+        }, data.child_id))
+
+        # Bot response for blocked content
+        bot_msg = Message(
+            conversation_id=conversation_id,
+            role="assistant",
+            text="Hmm, let's use kind and friendly words! How about we talk about something fun instead? What's your favorite animal?",
+            thought="Profanity filter triggered. Blocked words detected in child's message.",
+            safety_level="ALERT",
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(bot_msg)
+        await db.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(message_count=Conversation.message_count + 1, updated_at=datetime.now(timezone.utc))
+        )
+        await db.commit()
+        await db.refresh(bot_msg)
+
+        return {
+            "conversation_id": conversation_id,
+            "user_message": {
+                "id": user_msg.id,
+                "role": "user",
+                "text": data.text,
+                "blocked": True,
+                "blocked_words": profanity_result["matched_words"],
+                "created_at": user_msg.created_at.isoformat()
+            },
+            "bot_message": {
+                "id": bot_msg.id,
+                "role": "assistant",
+                "text": bot_msg.text,
+                "thought": bot_msg.thought,
+                "safety_level": bot_msg.safety_level,
+                "created_at": bot_msg.created_at.isoformat()
+            },
+            "blocked": True
         }
-        await db.messages.insert_one(bot_msg)
-        bot_msg.pop("_id", None)
-        await db.conversations.update_one({"id": conversation_id}, {"$inc": {"message_count": 1}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
 
-        return {"conversation_id": conversation_id, "user_message": user_msg, "bot_message": bot_msg, "blocked": True, "alert": alert_doc}
-
+    # Check restricted topics
     restricted = check_restricted_topics(data.text)
 
-    user_msg = {
-        "id": str(uuid.uuid4()), "conversation_id": conversation_id,
-        "role": "user", "text": data.text,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "blocked": False, "flagged_topics": restricted if restricted else None
-    }
-    await db.messages.insert_one(user_msg)
-    user_msg.pop("_id", None)
+    # Save user message
+    user_msg = Message(
+        conversation_id=conversation_id,
+        role="user",
+        text=data.text,
+        blocked=False,
+        flagged_topics=restricted if restricted else None,
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(user_msg)
+    await db.commit()
+    await db.refresh(user_msg)
 
-    history = await db.messages.find(
-        {"conversation_id": conversation_id, "role": {"$in": ["user", "assistant"]}, "blocked": {"$ne": True}}, {"_id": 0}
-    ).sort("created_at", 1).to_list(20)
+    # Get conversation history
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id, Message.blocked != True)
+        .order_by(Message.created_at)
+        .limit(20)
+    )
+    history = result.scalars().all()
 
     context_parts = []
     for msg in history[:-1]:
-        if msg["role"] == "user": context_parts.append(f"Child: {msg['text']}")
-        else: context_parts.append(f"BuddyBot: {msg['text']}")
+        if msg.role == "user":
+            context_parts.append(f"Child: {msg.text}")
+        else:
+            context_parts.append(f"BuddyBot: {msg.text}")
     context_str = "\n".join(context_parts[-10:])
 
-    browsing_context = await get_browsing_context(data.device_id)
+    browsing_context = await get_browsing_context(db, data.device_id)
     extra_context = ""
     if restricted:
         extra_context = f"\n\n[SYSTEM NOTE: Restricted topics detected: {restricted}. Redirect gently.]"
@@ -1067,6 +1082,7 @@ async def send_message(data: MessageCreate):
     prefix = f"Previous conversation:\n{context_str}\n\n" if context_str else ""
     full_prompt = f"{prefix}Child's message: {data.text}{extra_context}{browsing_context}"
 
+    # Call LLM
     try:
         chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"buddy-{conversation_id}-{uuid.uuid4().hex[:8]}", system_message=REACT_SYSTEM_PROMPT)
         chat.with_model("openai", "gpt-4.1-mini")
@@ -1076,210 +1092,410 @@ async def send_message(data: MessageCreate):
         logger.error(f"LLM error: {e}")
         parsed = {"thought": f"LLM call failed: {str(e)}", "safety_level": "CAUTION", "response": "Oops! My brain got a little fuzzy for a second. Can you say that again?"}
 
+    # Create alert if needed
     if parsed["safety_level"] == "ALERT" or restricted:
         severity = "high" if parsed["safety_level"] == "ALERT" else "medium"
-        alert_doc = {
-            "id": str(uuid.uuid4()), "conversation_id": conversation_id,
-            "message_id": user_msg["id"], "type": "restricted_topic", "severity": severity,
-            "details": f"Safety Level: {parsed['safety_level']}. Topics: {restricted if restricted else 'AI flagged'}. AI Thought: {parsed['thought'][:200]}",
-            "child_message": data.text,
-            "created_at": datetime.now(timezone.utc).isoformat(), "resolved": False
-        }
-        await db.alerts.insert_one(alert_doc)
-        alert_doc.pop("_id", None)
-        asyncio.create_task(notify_parent_of_alert(alert_doc, data.child_id))
-        await db.conversations.update_one({"id": conversation_id}, {"$set": {"has_flags": True, "updated_at": datetime.now(timezone.utc).isoformat()}, "$inc": {"flag_count": 1}})
+        alert = Alert(
+            conversation_id=conversation_id,
+            message_id=user_msg.id,
+            type="restricted_topic",
+            severity=severity,
+            details=f"Safety Level: {parsed['safety_level']}. Topics: {restricted if restricted else 'AI flagged'}. AI Thought: {parsed['thought'][:200]}",
+            child_message=data.text,
+            created_at=datetime.now(timezone.utc)
+        )
+        db.add(alert)
+        await db.execute(
+            update(Conversation)
+            .where(Conversation.id == conversation_id)
+            .values(has_flags=True, flag_count=Conversation.flag_count + 1)
+        )
+        asyncio.create_task(notify_parent_of_alert(db, {
+            "type": "restricted_topic",
+            "severity": severity,
+            "details": alert.details,
+            "child_message": data.text
+        }, data.child_id))
 
-    bot_msg = {
-        "id": str(uuid.uuid4()), "conversation_id": conversation_id,
-        "role": "assistant", "text": parsed["response"],
-        "thought": parsed["thought"], "safety_level": parsed["safety_level"],
-        "created_at": datetime.now(timezone.utc).isoformat(),
+    # Save bot response
+    bot_msg = Message(
+        conversation_id=conversation_id,
+        role="assistant",
+        text=parsed["response"],
+        thought=parsed["thought"],
+        safety_level=parsed["safety_level"],
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(bot_msg)
+    await db.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(message_count=Conversation.message_count + 2, updated_at=datetime.now(timezone.utc))
+    )
+    await db.commit()
+    await db.refresh(bot_msg)
+
+    return {
+        "conversation_id": conversation_id,
+        "user_message": {
+            "id": user_msg.id,
+            "role": "user",
+            "text": data.text,
+            "blocked": False,
+            "flagged_topics": restricted if restricted else None,
+            "created_at": user_msg.created_at.isoformat()
+        },
+        "bot_message": {
+            "id": bot_msg.id,
+            "role": "assistant",
+            "text": bot_msg.text,
+            "thought": bot_msg.thought,
+            "safety_level": bot_msg.safety_level,
+            "created_at": bot_msg.created_at.isoformat()
+        },
+        "blocked": False
     }
-    await db.messages.insert_one(bot_msg)
-    bot_msg.pop("_id", None)
-    await db.conversations.update_one({"id": conversation_id}, {"$inc": {"message_count": 2}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}})
-
-    return {"conversation_id": conversation_id, "user_message": user_msg, "bot_message": bot_msg, "blocked": False}
 
 
 # ============================================================
 # EXTENSION ENDPOINTS
 # ============================================================
 @api_router.post("/extension/packets")
-async def receive_packets(batch: PacketBatch):
+async def receive_packets(batch: PacketBatch, db: AsyncSession = Depends(get_db)):
     if not batch.packets:
         return {"status": "ok", "received": 0}
-    docs = []
+    
     alerts_to_create = []
+    
     for packet in batch.packets:
-        doc = packet.model_dump()
-        doc["synced_at"] = datetime.now(timezone.utc).isoformat()
+        bp = BrowsingPacket(
+            id=packet.id,
+            device_id=packet.device_id,
+            timestamp=packet.timestamp,
+            tab_type=packet.tab_type,
+            url=packet.url,
+            domain=packet.domain,
+            title=packet.title,
+            packet_type=packet.packet_type,
+            search_query=packet.search_query,
+            search_engine=packet.search_engine,
+            synced_at=datetime.now(timezone.utc)
+        )
+        
         if packet.packet_type == "search_query" and packet.search_query:
             profanity = check_profanity(packet.search_query)
             restricted = check_restricted_topics(packet.search_query)
-            doc["profanity_flagged"] = profanity["is_blocked"]
-            doc["profanity_words"] = profanity["matched_words"]
-            doc["profanity_categories"] = profanity.get("categories", {})
-            doc["fuzzy_matched"] = profanity.get("fuzzy_matched", [])
-            doc["restricted_topics"] = restricted if restricted else None
+            bp.profanity_flagged = profanity["is_blocked"]
+            bp.profanity_words = profanity["matched_words"]
+            bp.profanity_categories = profanity.get("categories", {})
+            bp.fuzzy_matched = profanity.get("fuzzy_matched", [])
+            bp.restricted_topics = restricted if restricted else None
+            
             if profanity["is_blocked"] or restricted:
                 severity = "high" if profanity["is_blocked"] else "medium"
+                categories_info = f" | Categories: {', '.join(profanity['categories'].keys())}" if profanity.get("categories") else ""
                 
-                # Build detailed alert message
-                categories_info = ""
-                if profanity.get("categories"):
-                    categories_info = f" | Categories: {', '.join(profanity['categories'].keys())}"
-                fuzzy_info = ""
-                if profanity.get("fuzzy_matched"):
-                    fuzzy_info = f" | Fuzzy matches: {profanity['fuzzy_matched']}"
-                
-                alert = {
-                    "id": str(uuid.uuid4()), "type": "browsing_alert", "severity": severity,
-                    "device_id": batch.device_id,
-                    "details": f"Flagged search: \"{packet.search_query}\" on {packet.search_engine or 'browser'}{categories_info}{fuzzy_info}",
-                    "child_message": packet.search_query, "tab_type": packet.tab_type,
-                    "url": packet.url, "created_at": datetime.now(timezone.utc).isoformat(),
-                    "resolved": False, "source": "extension",
-                    "categories": profanity.get("categories", {}),
-                    "fuzzy_matched": profanity.get("fuzzy_matched", [])
-                }
-                if restricted: alert["details"] += f" | Topics: {list(restricted.keys())}"
-                if profanity["is_blocked"] and not categories_info: alert["details"] += f" | Blocked words: {profanity['matched_words']}"
+                alert = Alert(
+                    type="browsing_alert",
+                    severity=severity,
+                    device_id=batch.device_id,
+                    details=f"Flagged search: \"{packet.search_query}\" on {packet.search_engine or 'browser'}{categories_info}",
+                    child_message=packet.search_query,
+                    tab_type=packet.tab_type,
+                    url=packet.url,
+                    source="extension",
+                    categories=profanity.get("categories", {}),
+                    fuzzy_matched=profanity.get("fuzzy_matched", []),
+                    created_at=datetime.now(timezone.utc)
+                )
+                if restricted:
+                    alert.details += f" | Topics: {list(restricted.keys())}"
                 alerts_to_create.append(alert)
-        docs.append(doc)
-    if docs:
-        await db.browsing_packets.insert_many(docs)
-    if alerts_to_create:
-        await db.alerts.insert_many(alerts_to_create)
-        for alert in alerts_to_create:
-            alert.pop("_id", None)
-            asyncio.create_task(notify_parent_of_alert(alert))
-    return {"status": "ok", "received": len(docs), "alerts_created": len(alerts_to_create)}
+        
+        db.add(bp)
+    
+    for alert in alerts_to_create:
+        db.add(alert)
+        asyncio.create_task(notify_parent_of_alert(db, {
+            "type": alert.type,
+            "severity": alert.severity,
+            "details": alert.details,
+            "child_message": alert.child_message
+        }))
+    
+    await db.commit()
+    
+    return {"status": "ok", "received": len(batch.packets), "alerts_created": len(alerts_to_create)}
 
 
 @api_router.get("/extension/status/{device_id}")
-async def extension_status(device_id: str):
-    packet_count = await db.browsing_packets.count_documents({"device_id": device_id})
-    last_packet = await db.browsing_packets.find_one({"device_id": device_id}, {"_id": 0, "timestamp": 1}, sort=[("timestamp", -1)])
-    alert_count = await db.alerts.count_documents({"device_id": device_id, "source": "extension"})
-    return {"device_id": device_id, "total_packets": packet_count, "last_activity": last_packet["timestamp"] if last_packet else None, "total_alerts": alert_count}
+async def extension_status(device_id: str, db: AsyncSession = Depends(get_db)):
+    packet_count = await db.execute(select(func.count()).select_from(BrowsingPacket).where(BrowsingPacket.device_id == device_id))
+    packet_count = packet_count.scalar()
+    
+    result = await db.execute(
+        select(BrowsingPacket)
+        .where(BrowsingPacket.device_id == device_id)
+        .order_by(desc(BrowsingPacket.timestamp))
+        .limit(1)
+    )
+    last_packet = result.scalar_one_or_none()
+    
+    alert_count = await db.execute(
+        select(func.count()).select_from(Alert)
+        .where(Alert.device_id == device_id, Alert.source == "extension")
+    )
+    alert_count = alert_count.scalar()
+    
+    return {
+        "device_id": device_id,
+        "total_packets": packet_count,
+        "last_activity": last_packet.timestamp if last_packet else None,
+        "total_alerts": alert_count
+    }
 
 
 # ============================================================
 # PARENT DASHBOARD ENDPOINTS (Auth required)
 # ============================================================
 @api_router.get("/parent/dashboard")
-async def parent_dashboard(request: Request):
-    await get_current_user(request)
-    total_conversations = await db.conversations.count_documents({})
-    total_messages = await db.messages.count_documents({})
-    total_alerts = await db.alerts.count_documents({})
-    unresolved_alerts = await db.alerts.count_documents({"resolved": False})
-    flagged_conversations = await db.conversations.count_documents({"has_flags": True})
-    total_packets = await db.browsing_packets.count_documents({})
-    browsing_alerts = await db.alerts.count_documents({"source": "extension"})
-    incognito_count = await db.browsing_packets.count_documents({"tab_type": "incognito"})
-    recent_alerts = await db.alerts.find({}, {"_id": 0}).sort("created_at", -1).to_list(10)
+async def parent_dashboard(request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    
+    total_conversations = await db.execute(select(func.count()).select_from(Conversation).where(Conversation.user_id == user.id))
+    total_conversations = total_conversations.scalar()
+    
+    total_messages = await db.execute(
+        select(func.count()).select_from(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(Conversation.user_id == user.id)
+    )
+    total_messages = total_messages.scalar()
+    
+    total_alerts = await db.execute(
+        select(func.count()).select_from(Alert)
+        .join(Conversation, Alert.conversation_id == Conversation.id, isouter=True)
+        .where((Conversation.user_id == user.id) | (Alert.conversation_id == None))
+    )
+    total_alerts = total_alerts.scalar()
+    
+    unresolved_alerts = await db.execute(
+        select(func.count()).select_from(Alert)
+        .where(Alert.resolved == False)
+    )
+    unresolved_alerts = unresolved_alerts.scalar()
+    
+    flagged_conversations = await db.execute(
+        select(func.count()).select_from(Conversation)
+        .where(Conversation.user_id == user.id, Conversation.has_flags == True)
+    )
+    flagged_conversations = flagged_conversations.scalar()
+    
+    total_packets = await db.execute(select(func.count()).select_from(BrowsingPacket))
+    total_packets = total_packets.scalar()
+    
+    browsing_alerts = await db.execute(
+        select(func.count()).select_from(Alert).where(Alert.source == "extension")
+    )
+    browsing_alerts = browsing_alerts.scalar()
+    
+    incognito_count = await db.execute(
+        select(func.count()).select_from(BrowsingPacket).where(BrowsingPacket.tab_type == "incognito")
+    )
+    incognito_count = incognito_count.scalar()
+    
+    result = await db.execute(select(Alert).order_by(desc(Alert.created_at)).limit(10))
+    recent_alerts = result.scalars().all()
+    
     return {
         "stats": {
-            "total_conversations": total_conversations, "total_messages": total_messages,
-            "total_alerts": total_alerts, "unresolved_alerts": unresolved_alerts,
-            "flagged_conversations": flagged_conversations, "total_packets": total_packets,
-            "browsing_alerts": browsing_alerts, "incognito_searches": incognito_count
+            "total_conversations": total_conversations,
+            "total_messages": total_messages,
+            "total_alerts": total_alerts,
+            "unresolved_alerts": unresolved_alerts,
+            "flagged_conversations": flagged_conversations,
+            "total_packets": total_packets,
+            "browsing_alerts": browsing_alerts,
+            "incognito_searches": incognito_count
         },
-        "recent_alerts": recent_alerts
+        "recent_alerts": [{
+            "id": a.id,
+            "type": a.type,
+            "severity": a.severity,
+            "details": a.details,
+            "child_message": a.child_message,
+            "resolved": a.resolved,
+            "created_at": a.created_at.isoformat() if a.created_at else None
+        } for a in recent_alerts]
     }
 
 
 @api_router.get("/parent/alerts")
-async def get_alerts(request: Request, resolved: Optional[bool] = None):
-    await get_current_user(request)
-    query = {}
-    if resolved is not None: query["resolved"] = resolved
-    return await db.alerts.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
+async def get_alerts(request: Request, resolved: Optional[bool] = None, db: AsyncSession = Depends(get_db)):
+    await get_current_user(request, db)
+    
+    query = select(Alert)
+    if resolved is not None:
+        query = query.where(Alert.resolved == resolved)
+    query = query.order_by(desc(Alert.created_at)).limit(100)
+    
+    result = await db.execute(query)
+    alerts = result.scalars().all()
+    
+    return [{
+        "id": a.id,
+        "conversation_id": a.conversation_id,
+        "message_id": a.message_id,
+        "type": a.type,
+        "severity": a.severity,
+        "details": a.details,
+        "child_message": a.child_message,
+        "categories": a.categories,
+        "resolved": a.resolved,
+        "resolved_at": a.resolved_at.isoformat() if a.resolved_at else None,
+        "created_at": a.created_at.isoformat() if a.created_at else None
+    } for a in alerts]
 
 
 @api_router.put("/parent/alerts/{alert_id}/resolve")
-async def resolve_alert(alert_id: str, request: Request):
-    await get_current_user(request)
-    result = await db.alerts.update_one({"id": alert_id}, {"$set": {"resolved": True, "resolved_at": datetime.now(timezone.utc).isoformat()}})
-    if result.matched_count == 0: raise HTTPException(status_code=404, detail="Alert not found")
+async def resolve_alert(alert_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    await get_current_user(request, db)
+    
+    result = await db.execute(select(Alert).where(Alert.id == alert_id))
+    alert = result.scalar_one_or_none()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    
+    alert.resolved = True
+    alert.resolved_at = datetime.now(timezone.utc)
+    await db.commit()
+    
     return {"status": "resolved", "alert_id": alert_id}
 
 
 @api_router.get("/parent/conversations")
-async def parent_conversations(request: Request):
-    await get_current_user(request)
-    return await db.conversations.find({}, {"_id": 0}).sort("updated_at", -1).to_list(100)
+async def parent_conversations(request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    
+    result = await db.execute(
+        select(Conversation)
+        .where(Conversation.user_id == user.id)
+        .order_by(desc(Conversation.updated_at))
+        .limit(100)
+    )
+    convs = result.scalars().all()
+    
+    return [{
+        "id": c.id,
+        "title": c.title,
+        "message_count": c.message_count or 0,
+        "has_flags": c.has_flags or False,
+        "flag_count": c.flag_count or 0,
+        "created_at": c.created_at.isoformat() if c.created_at else None,
+        "updated_at": c.updated_at.isoformat() if c.updated_at else None
+    } for c in convs]
 
 
 @api_router.get("/parent/conversations/{conversation_id}")
-async def parent_conversation_detail(conversation_id: str, request: Request):
-    await get_current_user(request)
-    conv = await db.conversations.find_one({"id": conversation_id}, {"_id": 0})
-    if not conv: raise HTTPException(status_code=404, detail="Conversation not found")
-    messages = await db.messages.find({"conversation_id": conversation_id}, {"_id": 0}).sort("created_at", 1).to_list(1000)
-    alerts = await db.alerts.find({"conversation_id": conversation_id}, {"_id": 0}).sort("created_at", -1).to_list(100)
-    return {"conversation": conv, "messages": messages, "alerts": alerts}
+async def parent_conversation_detail(conversation_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    user = await get_current_user(request, db)
+    
+    result = await db.execute(
+        select(Conversation).where(Conversation.id == conversation_id, Conversation.user_id == user.id)
+    )
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    result = await db.execute(
+        select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)
+    )
+    messages = result.scalars().all()
+    
+    result = await db.execute(
+        select(Alert).where(Alert.conversation_id == conversation_id).order_by(desc(Alert.created_at))
+    )
+    alerts = result.scalars().all()
+    
+    return {
+        "conversation": {
+            "id": conv.id,
+            "title": conv.title,
+            "message_count": conv.message_count or 0,
+            "has_flags": conv.has_flags or False,
+            "flag_count": conv.flag_count or 0,
+            "created_at": conv.created_at.isoformat() if conv.created_at else None,
+            "updated_at": conv.updated_at.isoformat() if conv.updated_at else None
+        },
+        "messages": [{
+            "id": m.id,
+            "role": m.role,
+            "text": m.text,
+            "blocked": m.blocked or False,
+            "blocked_words": m.blocked_words,
+            "thought": m.thought,
+            "safety_level": m.safety_level,
+            "created_at": m.created_at.isoformat() if m.created_at else None
+        } for m in messages],
+        "alerts": [{
+            "id": a.id,
+            "type": a.type,
+            "severity": a.severity,
+            "details": a.details,
+            "resolved": a.resolved,
+            "created_at": a.created_at.isoformat() if a.created_at else None
+        } for a in alerts]
+    }
 
 
 @api_router.get("/parent/browsing/stats")
-async def browsing_stats(request: Request):
-    await get_current_user(request)
+async def browsing_stats(request: Request, db: AsyncSession = Depends(get_db)):
+    await get_current_user(request, db)
+    
+    total = await db.execute(select(func.count()).select_from(BrowsingPacket))
+    search_count = await db.execute(select(func.count()).select_from(BrowsingPacket).where(BrowsingPacket.packet_type == "search_query"))
+    visit_count = await db.execute(select(func.count()).select_from(BrowsingPacket).where(BrowsingPacket.packet_type == "url_visit"))
+    incognito = await db.execute(select(func.count()).select_from(BrowsingPacket).where(BrowsingPacket.tab_type == "incognito"))
+    flagged = await db.execute(select(func.count()).select_from(BrowsingPacket).where(BrowsingPacket.profanity_flagged == True))
+    browsing_alerts = await db.execute(select(func.count()).select_from(Alert).where(Alert.source == "extension"))
+    
+    result = await db.execute(select(BrowsingPacket.device_id).distinct())
+    devices = [r[0] for r in result.fetchall()]
+    
     return {
-        "total_packets": await db.browsing_packets.count_documents({}),
-        "search_count": await db.browsing_packets.count_documents({"packet_type": "search_query"}),
-        "visit_count": await db.browsing_packets.count_documents({"packet_type": "url_visit"}),
-        "incognito_count": await db.browsing_packets.count_documents({"tab_type": "incognito"}),
-        "flagged_searches": await db.browsing_packets.count_documents({"profanity_flagged": True}),
-        "browsing_alerts": await db.alerts.count_documents({"source": "extension"}),
-        "devices": await db.browsing_packets.distinct("device_id")
+        "total_packets": total.scalar(),
+        "search_count": search_count.scalar(),
+        "visit_count": visit_count.scalar(),
+        "incognito_count": incognito.scalar(),
+        "flagged_searches": flagged.scalar(),
+        "browsing_alerts": browsing_alerts.scalar(),
+        "devices": devices
     }
 
 
 @api_router.get("/parent/browsing/searches")
-async def browsing_searches(request: Request, device_id: Optional[str] = None, limit: int = 50):
-    await get_current_user(request)
-    query = {"packet_type": "search_query"}
-    if device_id: query["device_id"] = device_id
-    return await db.browsing_packets.find(query, {"_id": 0}).sort("timestamp", -1).to_list(limit)
-
-
-@api_router.get("/parent/browsing/visits")
-async def browsing_visits(request: Request, device_id: Optional[str] = None, limit: int = 50):
-    await get_current_user(request)
-    query = {"packet_type": "url_visit"}
-    if device_id: query["device_id"] = device_id
-    return await db.browsing_packets.find(query, {"_id": 0}).sort("timestamp", -1).to_list(limit)
-
-
-@api_router.get("/parent/browsing/analysis")
-async def browsing_analysis(request: Request, device_id: Optional[str] = None):
-    await get_current_user(request)
-    if not device_id:
-        latest = await db.browsing_packets.find_one({}, {"_id": 0, "device_id": 1}, sort=[("timestamp", -1)])
-        if latest: device_id = latest["device_id"]
-        else: return {"safety_level": "SAFE", "analysis": "No browsing data available", "concerns": []}
-
-    recent_searches = await db.browsing_packets.find({"device_id": device_id, "packet_type": "search_query"}, {"_id": 0}).sort("timestamp", -1).to_list(50)
-    concerns = []
-    for search in recent_searches:
-        query = search.get("search_query", "")
-        topics = check_restricted_topics(query)
-        profanity = check_profanity(query)
-        if topics or profanity["is_blocked"]:
-            concerns.append({"query": query, "topics": topics, "profanity": profanity["matched_words"], "tab_type": search.get("tab_type", "normal"), "timestamp": search.get("timestamp"), "search_engine": search.get("search_engine")})
-
-    return {
-        "safety_level": "ALERT" if len(concerns) > 3 else ("CAUTION" if concerns else "SAFE"),
-        "analysis": f"{len(concerns)} concerning searches found out of {len(recent_searches)} total." if concerns else "No concerning patterns detected.",
-        "positive": "Child shows healthy interest in educational topics." if len(recent_searches) > len(concerns) * 3 else "",
-        "flagged_searches": concerns,
-        "total_searches": len(recent_searches),
-        "total_visits": await db.browsing_packets.count_documents({"device_id": device_id, "packet_type": "url_visit"}),
-        "incognito_count": len([s for s in recent_searches if s.get("tab_type") == "incognito"])
-    }
+async def browsing_searches(request: Request, device_id: Optional[str] = None, limit: int = 50, db: AsyncSession = Depends(get_db)):
+    await get_current_user(request, db)
+    
+    query = select(BrowsingPacket).where(BrowsingPacket.packet_type == "search_query")
+    if device_id:
+        query = query.where(BrowsingPacket.device_id == device_id)
+    query = query.order_by(desc(BrowsingPacket.timestamp)).limit(limit)
+    
+    result = await db.execute(query)
+    packets = result.scalars().all()
+    
+    return [{
+        "id": p.id,
+        "device_id": p.device_id,
+        "timestamp": p.timestamp,
+        "tab_type": p.tab_type,
+        "search_query": p.search_query,
+        "search_engine": p.search_engine,
+        "profanity_flagged": p.profanity_flagged,
+        "profanity_words": p.profanity_words,
+        "restricted_topics": p.restricted_topics
+    } for p in packets]
 
 
 @api_router.get("/")
@@ -1296,13 +1512,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def startup():
-    await db.users.create_index("email", unique=True)
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

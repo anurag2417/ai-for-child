@@ -1,12 +1,17 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import axios from "axios";
-import { Send, Plus, MessageCircle, Shield, ChevronLeft } from "lucide-react";
+import { Send, Plus, MessageCircle, Shield, ChevronLeft, LogOut } from "lucide-react";
+import { useAuth } from "./AuthContext";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+// Configure axios to send credentials (cookies)
+axios.defaults.withCredentials = true;
 
 const BOT_AVATAR = "https://static.prod-images.emergentagent.com/jobs/c981f2d7-a198-4751-9292-bd3ea3733509/images/d376ea840d4cf39f522230889ca79fd1bbc7322d0f233bce72b70b50dca8ebdc.png";
 
 export default function ChatPage() {
+  const { user, logout } = useAuth();
   const [conversations, setConversations] = useState([]);
   const [activeConvId, setActiveConvId] = useState(() => {
     return localStorage.getItem("buddybot_active_conv") || null;
@@ -176,15 +181,30 @@ export default function ChatPage() {
           )}
         </div>
 
-        <div className="p-4 border-t border-slate-100">
+        <div className="p-4 border-t border-slate-100 space-y-2">
+          {user && (
+            <div className="flex items-center gap-2 p-2 text-sm text-slate-600">
+              <div className="w-8 h-8 rounded-full bg-sky-100 flex items-center justify-center text-sky-600 font-bold">
+                {user.name?.charAt(0).toUpperCase() || 'U'}
+              </div>
+              <span className="truncate font-medium">{user.name || user.email}</span>
+            </div>
+          )}
           <a
-            href="/login"
+            href="/parent"
             data-testid="parent-dashboard-link"
             className="flex items-center gap-2.5 text-emerald-700 hover:text-emerald-800 font-semibold text-base transition-colors p-2.5 rounded-xl hover:bg-emerald-50"
           >
             <Shield className="w-5 h-5" strokeWidth={2.5} />
             Parent Dashboard
           </a>
+          <button
+            onClick={logout}
+            className="w-full flex items-center gap-2.5 text-rose-600 hover:text-rose-700 font-semibold text-base transition-colors p-2.5 rounded-xl hover:bg-rose-50"
+          >
+            <LogOut className="w-5 h-5" strokeWidth={2.5} />
+            Log Out
+          </button>
         </div>
       </aside>
 

@@ -46,7 +46,9 @@ export function AuthProvider({ children }) {
       });
     } catch { /* ignore */ }
     localStorage.removeItem("buddybot_token");
+    localStorage.removeItem("buddybot_active_conv");
     setUser(null);
+    window.location.href = "/login";
   };
 
   return (

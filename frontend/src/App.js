@@ -7,7 +7,7 @@ import ParentDashboard from "@/components/ParentDashboard";
 import ParentConversationDetail from "@/components/ParentConversationDetail";
 import PasswordGate from "@/components/PasswordGate";
 
-function ProtectedRoute({ children }) {
+function ProtectedRoute({ children, requirePasswordGate = false }) {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -20,7 +20,12 @@ function ProtectedRoute({ children }) {
 
   if (!user) return <Navigate to="/login" replace />;
 
-  return <PasswordGate>{children}</PasswordGate>;
+  // Only use PasswordGate for parent dashboard routes
+  if (requirePasswordGate) {
+    return <PasswordGate>{children}</PasswordGate>;
+  }
+
+  return children;
 }
 
 function AppRouter() {
@@ -33,13 +38,17 @@ function AppRouter() {
 
   return (
     <Routes>
-      <Route path="/" element={<ChatPage />} />
+      <Route path="/" element={
+        <ProtectedRoute>
+          <ChatPage />
+        </ProtectedRoute>
+      } />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route
         path="/parent"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute requirePasswordGate={true}>
             <ParentDashboard />
           </ProtectedRoute>
         }
@@ -47,7 +56,7 @@ function AppRouter() {
       <Route
         path="/parent/conversation/:id"
         element={
-          <ProtectedRoute>
+          <ProtectedRoute requirePasswordGate={true}>
             <ParentConversationDetail />
           </ProtectedRoute>
         }
