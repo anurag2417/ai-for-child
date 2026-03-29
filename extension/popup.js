@@ -50,7 +50,7 @@ document.addEventListener("DOMContentLoaded", () => {
         statusDot.className = "status-dot paused";
         statusText.textContent = "Paused";
         toggleBtn.textContent = "Resume Monitoring";
-        toggleBtn.disabled = false;
+        toggleBtn.disabled = true;
       }
     });
 
@@ -86,9 +86,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   // Toggle active state (requires PIN)
-  toggleBtn.addEventListener("click", () => {
-    showPinView("toggle");
-  });
+  // toggleBtn.addEventListener("click", () => {
+  //   showPinView("toggle");
+  // });
 
   // Sync now
   syncBtn.addEventListener("click", () => {
