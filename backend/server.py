@@ -148,6 +148,23 @@ class PacketBatch(BaseModel):
     packets: List[BrowsingPacketModel]
 
 
+class QuizAnswerRequest(BaseModel):
+    conversation_id: str
+    question_index: int
+    answer: str  # A, B, C, or D
+
+
+class StoryChoiceRequest(BaseModel):
+    conversation_id: str
+    choice_index: int  # 1, 2, or 3
+
+
+class WebSearchRequest(BaseModel):
+    conversation_id: Optional[str] = None
+    query: str
+    url: Optional[str] = None  # Optional URL to summarize
+
+
 # ============================================================
 # EMAIL ALERTS
 # ============================================================
@@ -221,6 +238,43 @@ async def notify_parent_of_alert(db: AsyncSession, alert_data: dict, child_id: s
             child_message=alert_data.get("child_message", ""),
             severity=alert_data.get("severity", "medium")
         )
+
+
+# ============================================================
+# EXACT MATCH BLOCKED KEYWORDS (HIGH PRIORITY - STRICT FILTER)
+# ============================================================
+# These words trigger IMMEDIATE blocking with exact match only (no fuzzy matching)
+EXACT_MATCH_BLOCKED = [
+    # Most severe profanity
+    "fuck", "fucking", "fucker", "shit", "shitting", "cunt", "cock", "dick",
+    "pussy", "bitch", "nigger", "nigga", "faggot", "whore", "slut",
+    # Severe violence
+    "kill", "murder", "suicide", "rape", "molest", "pedophile",
+    # Drug references
+    "cocaine", "heroin", "meth", "crack",
+    # Adult content
+    "porn", "pornography", "xxx", "nude", "naked"
+]
+
+def check_exact_match_blocked(text: str) -> dict:
+    """
+    Check for exact match of high-priority blocked words.
+    Returns immediately if any match found - no fuzzy matching.
+    """
+    text_lower = text.lower()
+    # Split into words
+    words = re.findall(r'\b[a-zA-Z]+\b', text_lower)
+    matched = []
+    
+    for word in words:
+        if word in EXACT_MATCH_BLOCKED:
+            matched.append(word)
+    
+    return {
+        "is_blocked": len(matched) > 0,
+        "matched_words": matched,
+        "match_type": "exact"
+    }
 
 
 # ============================================================
@@ -551,8 +605,9 @@ def check_restricted_topics(text: str) -> dict:
 
 
 # ============================================================
-# REACT SYSTEM PROMPT
+# SYSTEM PROMPTS FOR DIFFERENT MODES
 # ============================================================
+
 REACT_SYSTEM_PROMPT = """You are BuddyBot, a warm, friendly, and safe AI companion for children aged 5-12. You speak in simple, encouraging language.
 
 IMPORTANT: You must ALWAYS follow this ReAct thinking pattern internally before every response:
@@ -573,27 +628,186 @@ IMPORTANT: You must ALWAYS follow this ReAct thinking pattern internally before 
 5. Never provide personal information or encourage sharing personal details
 6. Keep responses SHORT (2-4 sentences max)
 
+**FOLLOW_UPS**: After your response, ALWAYS generate exactly 3 follow-up question suggestions that the child might want to ask next. These should be context-aware and age-appropriate.
+
 You MUST format your response EXACTLY like this:
 [THOUGHT] Your safety analysis here
 [SAFETY] SAFE or CAUTION or ALERT
-[RESPONSE] Your child-friendly response here"""
+[RESPONSE] Your child-friendly response here
+[FOLLOWUPS]
+1. First suggested follow-up question
+2. Second suggested follow-up question
+3. Third suggested follow-up question"""
+
+
+QUIZ_SYSTEM_PROMPT = """You are BuddyBot's Quiz Master mode! Generate fun, educational multiple-choice quizzes for children aged 5-12.
+
+Based on the conversation topic provided, create a quiz with the following format:
+
+RULES:
+1. Generate 3-5 multiple-choice questions
+2. Each question should have 4 options (A, B, C, D)
+3. Questions should be age-appropriate and educational
+4. Include fun facts or explanations for the correct answers
+5. Make it engaging and encouraging!
+
+You MUST format your response EXACTLY like this:
+[QUIZ_TITLE] Fun Quiz About [Topic]!
+[QUESTION_1]
+Q: Your question here?
+A) Option A
+B) Option B
+C) Option C
+D) Option D
+CORRECT: A
+FUN_FACT: A fun fact about the answer!
+
+[QUESTION_2]
+... (same format)
+
+[END_QUIZ]"""
+
+
+STORY_SYSTEM_PROMPT = """You are BuddyBot's Storyteller mode! Create magical, age-appropriate "Choose Your Own Adventure" stories for children aged 5-12.
+
+RULES:
+1. Stories should be imaginative, fun, and child-safe
+2. Each story segment should be 2-3 short paragraphs
+3. End each segment with 2-3 numbered choices for what happens next
+4. Keep vocabulary simple and engaging
+5. Include positive themes like friendship, bravery, kindness, and curiosity
+6. NEVER include scary, violent, or inappropriate content
+
+You MUST format your response EXACTLY like this:
+[STORY_TITLE] Your Story Title Here
+[SEGMENT]
+Your story segment here... (2-3 paragraphs of the adventure)
+
+[CHOICES]
+1. First choice - what could happen
+2. Second choice - another option
+3. Third choice - yet another path (optional)
+
+[STORY_STATUS] CONTINUE or END"""
+
+
+WEBSEARCH_SYSTEM_PROMPT = """You are BuddyBot helping to summarize web content for children aged 5-12.
+
+RULES:
+1. Summarize the content in simple, child-friendly language
+2. Remove any inappropriate or adult content
+3. Highlight interesting facts
+4. Keep the summary to 2-3 paragraphs maximum
+5. If the content is not appropriate for children, say so politely and suggest a different topic
+
+Format:
+[SUMMARY] Your child-friendly summary here
+[KEY_FACTS]
+- Fact 1
+- Fact 2
+- Fact 3
+[SAFETY_CHECK] SAFE or RESTRICTED (if restricted, explain why briefly)"""
 
 
 def parse_react_response(raw_response: str) -> dict:
+    """Parse the ReAct response including follow-up suggestions."""
     thought = ""
     safety_level = "SAFE"
     response = ""
+    followups = []
+    
     thought_match = re.search(r'\[THOUGHT\]\s*(.*?)(?=\[SAFETY\])', raw_response, re.DOTALL)
     safety_match = re.search(r'\[SAFETY\]\s*(SAFE|CAUTION|ALERT)', raw_response, re.DOTALL)
-    response_match = re.search(r'\[RESPONSE\]\s*(.*?)$', raw_response, re.DOTALL)
-    if thought_match: thought = thought_match.group(1).strip()
-    if safety_match: safety_level = safety_match.group(1).strip()
-    if response_match: response = response_match.group(1).strip()
+    response_match = re.search(r'\[RESPONSE\]\s*(.*?)(?=\[FOLLOWUPS\]|$)', raw_response, re.DOTALL)
+    followups_match = re.search(r'\[FOLLOWUPS\]\s*(.*?)$', raw_response, re.DOTALL)
+    
+    if thought_match:
+        thought = thought_match.group(1).strip()
+    if safety_match:
+        safety_level = safety_match.group(1).strip()
+    if response_match:
+        response = response_match.group(1).strip()
+    if followups_match:
+        followups_text = followups_match.group(1).strip()
+        # Parse numbered follow-ups
+        followup_lines = re.findall(r'\d+\.\s*(.+)', followups_text)
+        followups = [f.strip() for f in followup_lines[:3]]
+    
     if not response:
         response = raw_response.strip()
         thought = "Unable to parse structured response"
         safety_level = "CAUTION"
-    return {"thought": thought, "safety_level": safety_level, "response": response}
+    
+    return {
+        "thought": thought,
+        "safety_level": safety_level,
+        "response": response,
+        "followups": followups
+    }
+
+
+def parse_quiz_response(raw_response: str) -> dict:
+    """Parse the quiz response into structured data."""
+    quiz_data = {
+        "title": "Fun Quiz!",
+        "questions": [],
+        "total_questions": 0
+    }
+    
+    # Extract title
+    title_match = re.search(r'\[QUIZ_TITLE\]\s*(.+)', raw_response)
+    if title_match:
+        quiz_data["title"] = title_match.group(1).strip()
+    
+    # Extract questions
+    question_pattern = r'\[QUESTION_\d+\]\s*Q:\s*(.+?)\s*A\)\s*(.+?)\s*B\)\s*(.+?)\s*C\)\s*(.+?)\s*D\)\s*(.+?)\s*CORRECT:\s*([ABCD])\s*FUN_FACT:\s*(.+?)(?=\[QUESTION_|\[END_QUIZ\]|$)'
+    questions = re.findall(question_pattern, raw_response, re.DOTALL)
+    
+    for q in questions:
+        quiz_data["questions"].append({
+            "question": q[0].strip(),
+            "options": {
+                "A": q[1].strip(),
+                "B": q[2].strip(),
+                "C": q[3].strip(),
+                "D": q[4].strip()
+            },
+            "correct": q[5].strip(),
+            "fun_fact": q[6].strip()
+        })
+    
+    quiz_data["total_questions"] = len(quiz_data["questions"])
+    return quiz_data
+
+
+def parse_story_response(raw_response: str) -> dict:
+    """Parse the story response into structured data."""
+    story_data = {
+        "title": "",
+        "segment": "",
+        "choices": [],
+        "status": "CONTINUE"
+    }
+    
+    title_match = re.search(r'\[STORY_TITLE\]\s*(.+)', raw_response)
+    if title_match:
+        story_data["title"] = title_match.group(1).strip()
+    
+    segment_match = re.search(r'\[SEGMENT\]\s*(.*?)(?=\[CHOICES\])', raw_response, re.DOTALL)
+    if segment_match:
+        story_data["segment"] = segment_match.group(1).strip()
+    
+    choices_match = re.search(r'\[CHOICES\]\s*(.*?)(?=\[STORY_STATUS\]|$)', raw_response, re.DOTALL)
+    if choices_match:
+        choices_text = choices_match.group(1).strip()
+        choice_lines = re.findall(r'\d+\.\s*(.+)', choices_text)
+        story_data["choices"] = [c.strip() for c in choice_lines]
+    
+    status_match = re.search(r'\[STORY_STATUS\]\s*(CONTINUE|END)', raw_response)
+    if status_match:
+        story_data["status"] = status_match.group(1).strip()
+    
+    return story_data
 
 
 async def get_browsing_context(db: AsyncSession, device_id: str = None) -> str:
@@ -959,10 +1173,20 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
     user = await get_current_user(request, db)
     
     conversation_id = data.conversation_id
+    text_lower = data.text.lower().strip()
+    
+    # Detect special modes
+    is_quiz_mode = text_lower.startswith("/quiz") or text_lower == "quiz" or "start a quiz" in text_lower
+    is_story_mode = text_lower.startswith("/story") or text_lower == "story" or "tell me a story" in text_lower or "start a story" in text_lower
     
     # Create new conversation if needed
     if not conversation_id:
-        title = data.text[:40] + ("..." if len(data.text) > 40 else "")
+        if is_quiz_mode:
+            title = "🎯 Quiz Time!"
+        elif is_story_mode:
+            title = "📖 Story Adventure"
+        else:
+            title = data.text[:40] + ("..." if len(data.text) > 40 else "")
         conv = Conversation(
             user_id=user.id,
             child_id=data.child_id,
@@ -983,42 +1207,35 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
         if not conv:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-    # Profanity check
-    profanity_result = check_profanity(data.text)
-    
-    if profanity_result["is_blocked"]:
+    # EXACT MATCH blocking first (Feature #5 - Strict Filter)
+    exact_block = check_exact_match_blocked(data.text)
+    if exact_block["is_blocked"]:
         # Save blocked user message
         user_msg = Message(
             conversation_id=conversation_id,
             role="user",
             text=data.text,
             blocked=True,
-            blocked_words=profanity_result["matched_words"],
+            blocked_words=exact_block["matched_words"],
             created_at=datetime.now(timezone.utc)
         )
         db.add(user_msg)
         await db.commit()
         await db.refresh(user_msg)
 
-        # Create alert
-        categories_str = ""
-        if profanity_result.get("categories"):
-            categories_str = f" Categories: {', '.join(profanity_result['categories'].keys())}."
-        
+        # Create alert with exact match flag
         alert = Alert(
             conversation_id=conversation_id,
             message_id=user_msg.id,
             type="profanity",
             severity="high",
-            details=f"Blocked words detected: {', '.join(profanity_result['matched_words'])}.{categories_str}",
+            details=f"EXACT MATCH blocked: {', '.join(exact_block['matched_words'])}",
             child_message=data.text,
-            categories=profanity_result.get("categories", {}),
-            fuzzy_matched=profanity_result.get("fuzzy_matched", []),
+            categories={"exact_match": exact_block["matched_words"]},
             created_at=datetime.now(timezone.utc)
         )
         db.add(alert)
 
-        # Update conversation
         await db.execute(
             update(Conversation)
             .where(Conversation.id == conversation_id)
@@ -1031,20 +1248,18 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
         )
         await db.commit()
 
-        # Send email alert
         asyncio.create_task(notify_parent_of_alert(db, {
             "type": "profanity",
             "severity": "high",
-            "details": alert.details,
+            "details": f"EXACT MATCH blocked: {exact_block['matched_words']}",
             "child_message": data.text
         }, data.child_id))
 
-        # Bot response for blocked content
         bot_msg = Message(
             conversation_id=conversation_id,
             role="assistant",
-            text="Hmm, let's use kind and friendly words! How about we talk about something fun instead? What's your favorite animal?",
-            thought="Profanity filter triggered. Blocked words detected in child's message.",
+            text="Hmm, let's use kind and friendly words! How about we talk about something fun instead? What's your favorite animal? 🐾",
+            thought="Exact match profanity filter triggered.",
             safety_level="ALERT",
             created_at=datetime.now(timezone.utc)
         )
@@ -1064,7 +1279,7 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
                 "role": "user",
                 "text": data.text,
                 "blocked": True,
-                "blocked_words": profanity_result["matched_words"],
+                "blocked_words": exact_block["matched_words"],
                 "created_at": user_msg.created_at.isoformat()
             },
             "bot_message": {
@@ -1073,9 +1288,11 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
                 "text": bot_msg.text,
                 "thought": bot_msg.thought,
                 "safety_level": bot_msg.safety_level,
-                "created_at": bot_msg.created_at.isoformat()
+                "created_at": bot_msg.created_at.isoformat(),
+                "followups": ["What's your favorite color?", "Do you have any pets?", "What did you do today?"]
             },
-            "blocked": True
+            "blocked": True,
+            "mode": "chat"
         }
 
     # Check restricted topics
@@ -1094,7 +1311,7 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
     await db.commit()
     await db.refresh(user_msg)
 
-    # Get conversation history
+    # Get conversation history for context
     result = await db.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id, Message.blocked != True)
@@ -1116,28 +1333,81 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
     if restricted:
         extra_context = f"\n\n[SYSTEM NOTE: Restricted topics detected: {restricted}. Redirect gently.]"
 
-    prefix = f"Previous conversation:\n{context_str}\n\n" if context_str else ""
-    full_prompt = f"{prefix}Child's message: {data.text}{extra_context}{browsing_context}"
+    # Determine mode and system prompt
+    mode = "chat"
+    system_prompt = REACT_SYSTEM_PROMPT
+    
+    if is_quiz_mode:
+        mode = "quiz"
+        system_prompt = QUIZ_SYSTEM_PROMPT
+        # Extract topic from conversation context
+        topic = "general knowledge"
+        if context_str:
+            topic = f"the topics discussed: {context_str[-500:]}"
+        full_prompt = f"Generate a fun quiz based on {topic}. The child said: {data.text}"
+    elif is_story_mode:
+        mode = "story"
+        system_prompt = STORY_SYSTEM_PROMPT
+        full_prompt = f"Start an exciting adventure story for a child. The child said: {data.text}"
+    else:
+        prefix = f"Previous conversation:\n{context_str}\n\n" if context_str else ""
+        full_prompt = f"{prefix}Child's message: {data.text}{extra_context}{browsing_context}"
 
     # Call LLM
     try:
-        chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"buddy-{conversation_id}-{uuid.uuid4().hex[:8]}", system_message=REACT_SYSTEM_PROMPT)
+        chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"buddy-{conversation_id}-{uuid.uuid4().hex[:8]}", system_message=system_prompt)
         chat.with_model("openai", "gpt-4.1-mini")
         raw_response = await chat.send_message(UserMessage(text=full_prompt))
-        parsed = parse_react_response(raw_response)
+        
+        if mode == "quiz":
+            parsed = parse_quiz_response(raw_response)
+            response_text = f"🎯 {parsed['title']}\n\nLet's start! Here's your first question:\n\n"
+            if parsed["questions"]:
+                q = parsed["questions"][0]
+                response_text += f"**{q['question']}**\n\n"
+                response_text += f"A) {q['options']['A']}\n"
+                response_text += f"B) {q['options']['B']}\n"
+                response_text += f"C) {q['options']['C']}\n"
+                response_text += f"D) {q['options']['D']}\n\n"
+                response_text += "Click your answer below! 👇"
+            parsed_response = {
+                "thought": "Quiz mode activated",
+                "safety_level": "SAFE",
+                "response": response_text,
+                "followups": [],
+                "quiz_data": parsed
+            }
+        elif mode == "story":
+            parsed = parse_story_response(raw_response)
+            response_text = f"📖 **{parsed['title']}**\n\n{parsed['segment']}"
+            parsed_response = {
+                "thought": "Story mode activated",
+                "safety_level": "SAFE",
+                "response": response_text,
+                "followups": [],
+                "story_data": parsed
+            }
+        else:
+            parsed_response = parse_react_response(raw_response)
+            
     except Exception as e:
         logger.error(f"LLM error: {e}")
-        parsed = {"thought": f"LLM call failed: {str(e)}", "safety_level": "CAUTION", "response": "Oops! My brain got a little fuzzy for a second. Can you say that again?"}
+        parsed_response = {
+            "thought": f"LLM call failed: {str(e)}",
+            "safety_level": "CAUTION",
+            "response": "Oops! My brain got a little fuzzy for a second. Can you say that again?",
+            "followups": ["What would you like to talk about?", "Tell me about your day!", "Want to play a game?"]
+        }
 
     # Create alert if needed
-    if parsed["safety_level"] == "ALERT" or restricted:
-        severity = "high" if parsed["safety_level"] == "ALERT" else "medium"
+    if parsed_response.get("safety_level") == "ALERT" or restricted:
+        severity = "high" if parsed_response.get("safety_level") == "ALERT" else "medium"
         alert = Alert(
             conversation_id=conversation_id,
             message_id=user_msg.id,
             type="restricted_topic",
             severity=severity,
-            details=f"Safety Level: {parsed['safety_level']}. Topics: {restricted if restricted else 'AI flagged'}. AI Thought: {parsed['thought'][:200]}",
+            details=f"Safety Level: {parsed_response.get('safety_level')}. Topics: {restricted if restricted else 'AI flagged'}. AI Thought: {parsed_response.get('thought', '')[:200]}",
             child_message=data.text,
             created_at=datetime.now(timezone.utc)
         )
@@ -1158,9 +1428,9 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
     bot_msg = Message(
         conversation_id=conversation_id,
         role="assistant",
-        text=parsed["response"],
-        thought=parsed["thought"],
-        safety_level=parsed["safety_level"],
+        text=parsed_response.get("response", ""),
+        thought=parsed_response.get("thought", ""),
+        safety_level=parsed_response.get("safety_level", "SAFE"),
         created_at=datetime.now(timezone.utc)
     )
     db.add(bot_msg)
@@ -1172,7 +1442,7 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
     await db.commit()
     await db.refresh(bot_msg)
 
-    return {
+    response_data = {
         "conversation_id": conversation_id,
         "user_message": {
             "id": user_msg.id,
@@ -1188,9 +1458,158 @@ async def send_message(data: MessageCreate, request: Request, db: AsyncSession =
             "text": bot_msg.text,
             "thought": bot_msg.thought,
             "safety_level": bot_msg.safety_level,
-            "created_at": bot_msg.created_at.isoformat()
+            "created_at": bot_msg.created_at.isoformat(),
+            "followups": parsed_response.get("followups", [])
         },
-        "blocked": False
+        "blocked": False,
+        "mode": mode
+    }
+    
+    # Add mode-specific data
+    if mode == "quiz" and "quiz_data" in parsed_response:
+        response_data["quiz_data"] = parsed_response["quiz_data"]
+    elif mode == "story" and "story_data" in parsed_response:
+        response_data["story_data"] = parsed_response["story_data"]
+    
+    return response_data
+
+
+# ============================================================
+# QUIZ ENDPOINTS (Feature #1)
+# ============================================================
+@api_router.post("/chat/quiz/answer")
+async def answer_quiz(data: QuizAnswerRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Handle quiz answer submission and return result with next question."""
+    user = await get_current_user(request, db)
+    
+    # For now, we'll generate feedback using LLM
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"quiz-{data.conversation_id}", system_message="You are a friendly quiz host for children. Give encouraging feedback on their answer.")
+    chat.with_model("openai", "gpt-4.1-mini")
+    
+    prompt = f"The child answered '{data.answer}' for question #{data.question_index + 1}. Give brief, encouraging feedback (1-2 sentences) whether right or wrong."
+    response = await chat.send_message(UserMessage(text=prompt))
+    
+    return {
+        "feedback": response,
+        "question_index": data.question_index,
+        "answer": data.answer
+    }
+
+
+# ============================================================
+# STORY ENDPOINTS (Feature #2)
+# ============================================================
+@api_router.post("/chat/story/choice")
+async def story_choice(data: StoryChoiceRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Handle story choice and continue the adventure."""
+    user = await get_current_user(request, db)
+    
+    # Get conversation history
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == data.conversation_id)
+        .order_by(desc(Message.created_at))
+        .limit(5)
+    )
+    recent_msgs = result.scalars().all()
+    
+    story_context = "\n".join([m.text for m in reversed(recent_msgs)])
+    
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"story-{data.conversation_id}", system_message=STORY_SYSTEM_PROMPT)
+    chat.with_model("openai", "gpt-4.1-mini")
+    
+    prompt = f"Previous story:\n{story_context}\n\nThe child chose option {data.choice_index}. Continue the adventure!"
+    raw_response = await chat.send_message(UserMessage(text=prompt))
+    parsed = parse_story_response(raw_response)
+    
+    # Save the choice and continuation
+    user_msg = Message(
+        conversation_id=data.conversation_id,
+        role="user",
+        text=f"[Chose option {data.choice_index}]",
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(user_msg)
+    
+    bot_msg = Message(
+        conversation_id=data.conversation_id,
+        role="assistant",
+        text=parsed["segment"],
+        thought="Story continuation",
+        safety_level="SAFE",
+        created_at=datetime.now(timezone.utc)
+    )
+    db.add(bot_msg)
+    await db.commit()
+    
+    return {
+        "story_data": parsed,
+        "segment": parsed["segment"],
+        "choices": parsed["choices"],
+        "status": parsed["status"]
+    }
+
+
+# ============================================================
+# WEB SEARCH ENDPOINT (Feature #4)
+# ============================================================
+@api_router.post("/chat/search")
+async def web_search_chat(data: WebSearchRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Search the web or summarize a URL for child-safe content."""
+    user = await get_current_user(request, db)
+    
+    # Safety check on the query first
+    exact_block = check_exact_match_blocked(data.query)
+    if exact_block["is_blocked"]:
+        return {
+            "safe": False,
+            "summary": "I can't search for that. Let's look up something fun instead!",
+            "blocked_reason": "restricted_query"
+        }
+    
+    restricted = check_restricted_topics(data.query)
+    if restricted:
+        return {
+            "safe": False,
+            "summary": "That topic might not be the best for kids. How about we explore something else?",
+            "blocked_reason": "restricted_topic",
+            "topics": list(restricted.keys())
+        }
+    
+    # Use LLM to generate a child-safe response about the topic
+    # (In production, you'd integrate actual web search here)
+    chat = LlmChat(api_key=EMERGENT_LLM_KEY, session_id=f"search-{uuid.uuid4().hex[:8]}", system_message=WEBSEARCH_SYSTEM_PROMPT)
+    chat.with_model("openai", "gpt-4.1-mini")
+    
+    if data.url:
+        prompt = f"The child wants to learn about content from this URL: {data.url}. Provide a child-friendly summary about the topic. If you can't access it, give general educational info about the topic."
+    else:
+        prompt = f"The child wants to learn about: {data.query}. Provide a child-friendly educational summary."
+    
+    raw_response = await chat.send_message(UserMessage(text=prompt))
+    
+    # Parse the response
+    summary_match = re.search(r'\[SUMMARY\]\s*(.*?)(?=\[KEY_FACTS\]|$)', raw_response, re.DOTALL)
+    facts_match = re.search(r'\[KEY_FACTS\]\s*(.*?)(?=\[SAFETY_CHECK\]|$)', raw_response, re.DOTALL)
+    safety_match = re.search(r'\[SAFETY_CHECK\]\s*(SAFE|RESTRICTED)', raw_response)
+    
+    summary = summary_match.group(1).strip() if summary_match else raw_response
+    
+    key_facts = []
+    if facts_match:
+        facts_text = facts_match.group(1).strip()
+        key_facts = [f.strip().lstrip('-').strip() for f in facts_text.split('\n') if f.strip()]
+    
+    is_safe = True
+    if safety_match and safety_match.group(1) == "RESTRICTED":
+        is_safe = False
+        summary = "This topic might not be appropriate for kids. Let's explore something else!"
+    
+    return {
+        "safe": is_safe,
+        "summary": summary,
+        "key_facts": key_facts[:5],
+        "query": data.query
     }
 
 
