@@ -228,12 +228,12 @@ BLOCKED_WORDS_BY_CATEGORY = {
         "fuck", "shit", "ass", "asshole", "bitch", "bastard", "damn", "crap",
         "dick", "cock", "pussy", "cunt", "twat", "prick", "bollocks", "wanker",
         "slut", "whore", "hoe", "skank", "tramp", "fag", "faggot", "dyke",
-        "retard", "retarded", "spaz", "moron", "idiot", "stupid", "dumb",
+        "retard", "retarded", "spaz", "moron", "imbecile",
         "piss", "pissed", "bloody", "bugger", "arse", "arsehole", "tosser",
         "douchebag", "douche", "jackass", "dipshit", "shithead", "asshat",
         "motherfucker", "fucker", "bullshit", "horseshit", "goddam", "goddamn",
-        "hell", "damnit", "screw", "screwed", "suck", "sucks", "sucked",
-        "wtf", "stfu", "lmao", "lmfao", "omfg", "fml", "af"
+        "damnit", "screwed",
+        "wtf", "stfu", "omfg", "fml"
     ],
     "violence": [
         # Weapons
@@ -280,7 +280,7 @@ BLOCKED_WORDS_BY_CATEGORY = {
         "xanax", "adderall", "ritalin", "valium", "barbiturate",
         # Cannabis
         "weed", "marijuana", "cannabis", "pot", "joint", "blunt", "bong",
-        "edible", "thc", "cbd", "dab", "dabbing", "stoner", "420",
+        "edible", "thc", "cbd", "stoner", "420",
         # Alcohol
         "alcohol", "beer", "wine", "vodka", "whiskey", "whisky", "rum",
         "tequila", "gin", "brandy", "bourbon", "scotch", "liquor", "booze",
@@ -308,8 +308,8 @@ BLOCKED_WORDS_BY_CATEGORY = {
     ],
     "cyberbullying": [
         # Direct insults
-        "loser", "ugly", "fat", "skinny", "freak", "weirdo", "nerd", "geek",
-        "dork", "lame", "pathetic", "worthless", "useless", "stupid", "dumb",
+        "loser", "ugly", "freak", "weirdo", "nerd", "geek",
+        "dork", "lame", "pathetic", "worthless", "useless",
         "idiot", "moron", "imbecile", "creep", "creepy", "gross", "disgusting",
         # Exclusion
         "nobody likes you", "no friends", "unfriend", "blocked", "ignored",
@@ -431,6 +431,7 @@ def fuzzy_match_word(word: str, blocked_words: list, max_distance: int = 2) -> t
     """
     Check if a word fuzzy-matches any blocked word.
     Returns (is_match, matched_word, distance)
+    Uses moderate strictness to balance safety vs false positives.
     """
     word_normalized = normalize_leetspeak(word)
     
@@ -441,21 +442,41 @@ def fuzzy_match_word(word: str, blocked_words: list, max_distance: int = 2) -> t
     for blocked in blocked_words:
         blocked_normalized = blocked.lower()
         
+        # Skip if word lengths are too different (prevents "cute" matching "execute")
+        length_diff = abs(len(word_normalized) - len(blocked_normalized))
+        if length_diff > 2:
+            continue
+        
         # Exact match after normalization
         if word_normalized == blocked_normalized:
             return (True, blocked, 0)
         
-        # Check if blocked word is contained in the word
-        if blocked_normalized in word_normalized and len(blocked_normalized) >= 3:
-            return (True, blocked, 0)
+        # Check if blocked word equals word with prefix/suffix (but not arbitrary containment)
+        # This prevents "hello" matching "hell" but allows "shitty" matching "shit"
+        if len(blocked_normalized) >= 4:
+            # Word starts with blocked word and only has 1-2 extra chars
+            if word_normalized.startswith(blocked_normalized) and len(word_normalized) - len(blocked_normalized) <= 2:
+                return (True, blocked, 0)
+            # Word ends with blocked word and only has 1-2 extra chars  
+            if word_normalized.endswith(blocked_normalized) and len(word_normalized) - len(blocked_normalized) <= 2:
+                return (True, blocked, 0)
         
-        # Fuzzy matching with Levenshtein distance
-        # Adjust max distance based on word length for better accuracy
-        effective_max_distance = min(max_distance, max(1, len(blocked_normalized) // 3))
-        
+        # Calculate Levenshtein distance
         distance = levenshtein_distance(word_normalized, blocked_normalized)
-        if distance <= effective_max_distance:
-            return (True, blocked, distance)
+        
+        # For very short words (3-4 chars), only allow distance of 1 and same length
+        if len(blocked_normalized) <= 4:
+            if distance == 1 and length_diff <= 1:
+                return (True, blocked, distance)
+        # For medium words (5-6 chars), allow distance of 1-2 with similar length
+        elif len(blocked_normalized) <= 6:
+            if distance <= 1 and length_diff <= 1:
+                return (True, blocked, distance)
+        # For longer words, use proportional distance
+        else:
+            effective_max_distance = min(max_distance, max(1, len(blocked_normalized) // 4))
+            if distance <= effective_max_distance and length_diff <= 2:
+                return (True, blocked, distance)
     
     return (False, None, -1)
 
@@ -463,16 +484,38 @@ def check_profanity(text: str) -> dict:
     """
     Check text for profanity with fuzzy matching support.
     Handles misspellings, leetspeak, and character substitutions.
+    Uses moderate strictness to balance safety vs false positives.
     """
     text_lower = text.lower()
     text_normalized = normalize_leetspeak(text_lower)
     matched = []
     fuzzy_matched = []
     
-    # Extract words from text
+    # Common safe words that might trigger false positives
+    SAFE_WORDS = {
+        'shell', 'classic', 'classics', 'class', 'assassin', 'assess', 'assistant',
+        'associate', 'assume', 'assignment', 'passionate', 'compass',
+        'assault', 'grass', 'glass', 'pass', 'mass', 'bass', 'brass',
+        'cocktail', 'peacock', 'hancock', 'woodcock', 'shuttlecock',
+        'scunthorpe', 'hello', 'shell', 'shelling', 'shellfish',
+        'analysis', 'analyst', 'analyzed', 'analytical',
+        'title', 'titled', 'titles', 'titillate', 'titian',
+        'thatch', 'thanks', 'that', 'the', 'them', 'then', 'there',
+        'butterscotch', 'scratch', 'watch', 'catch', 'match',
+        'executing', 'execution', 'execute', 'executive',
+        'document', 'documents', 'documented',
+        'cracked', 'cracker', 'crackers', 'cracking', 'firecracker',
+        'its', 'hits', 'bits', 'kits', 'sits', 'fits', 'pits', 'wits',
+        'classwork', 'classroom', 'classification', 'classical',
+        'assassinate', 'assassinated', 'assassinating',
+        'beautiful', 'beautifully', 'beauty', 'day', 'days', 'today',
+        'database', 'dabble', 'dab'  # 'dab' as drug slang only in specific contexts
+    }
+    
+    # Extract words from text (split by whitespace and common punctuation)
     words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
     
-    # Also check the normalized version for phrases
+    # Also check the normalized version
     words_normalized = re.findall(r'[a-z]+', text_normalized)
     
     all_words = set(words + words_normalized)
@@ -481,30 +524,64 @@ def check_profanity(text: str) -> dict:
         # Skip very short words
         if len(word) < 3:
             continue
+        
+        # Skip known safe words
+        if word.lower() in SAFE_WORDS:
+            continue
             
-        # Check exact match first (faster)
         word_normalized = normalize_leetspeak(word)
+        
+        # Skip if normalized word is a safe word
+        if word_normalized in SAFE_WORDS:
+            continue
+        
+        word_matched = False
         
         for blocked in BLOCKED_WORDS:
             blocked_lower = blocked.lower()
             
-            # Exact match
+            # Skip if word lengths are too different
+            length_diff = abs(len(word_normalized) - len(blocked_lower))
+            if length_diff > 3:
+                continue
+            
+            # Exact match (highest priority)
             if word_normalized == blocked_lower or word.lower() == blocked_lower:
                 if blocked not in matched:
                     matched.append(blocked)
+                word_matched = True
                 break
             
-            # Substring match for longer blocked words
-            if len(blocked_lower) >= 4 and blocked_lower in word_normalized:
-                if blocked not in matched:
-                    matched.append(blocked)
-                break
+            # Word is a variant with suffix (e.g., "fucking" matches "fuck")
+            # Require the blocked word to be at least 4 chars and be significant portion
+            if len(blocked_lower) >= 4:
+                if word_normalized.startswith(blocked_lower):
+                    extra_chars = len(word_normalized) - len(blocked_lower)
+                    # Only allow common suffixes (ing, ed, er, s, y, ly)
+                    if extra_chars <= 3:
+                        suffix = word_normalized[len(blocked_lower):]
+                        if suffix in ['', 's', 'y', 'ed', 'er', 'ing', 'ly', 'ish', 'ness']:
+                            if blocked not in matched:
+                                matched.append(blocked)
+                            word_matched = True
+                            break
+            
+            # Check for leetspeak variations with 1 char difference (for short words)
+            if len(blocked_lower) <= 5 and len(word_normalized) <= 6 and length_diff <= 1:
+                dist = levenshtein_distance(word_normalized, blocked_lower)
+                if dist == 1:
+                    if blocked not in matched:
+                        matched.append(blocked)
+                    word_matched = True
+                    break
         
-        # Fuzzy match if no exact match found
-        if word not in [m.lower() for m in matched]:
+        # Fuzzy match if no exact/near-exact match found
+        if not word_matched:
             is_match, blocked_word, distance = fuzzy_match_word(word, BLOCKED_WORDS, max_distance=2)
             if is_match and blocked_word not in matched and blocked_word not in fuzzy_matched:
-                fuzzy_matched.append(blocked_word)
+                # Double check it's not a safe word being matched
+                if word.lower() not in SAFE_WORDS and word_normalized not in SAFE_WORDS:
+                    fuzzy_matched.append(blocked_word)
     
     # Combine results
     all_matched = matched + fuzzy_matched
@@ -531,24 +608,56 @@ def check_profanity(text: str) -> dict:
 def check_restricted_topics(text: str) -> dict:
     """
     Check text for restricted topics with fuzzy matching support.
+    Prioritizes phrase matching before individual word matching.
     """
     text_lower = text.lower()
     text_normalized = normalize_leetspeak(text_lower)
     flagged = {}
     
-    for category, phrases in RESTRICTED_TOPICS.items():
+    # Priority order for categories (self_harm should be checked first for phrases like "want to die")
+    category_priority = ["self_harm", "violence", "adult_content", "substance", 
+                         "cyberbullying", "hate_speech", "dangerous_activities", "privacy"]
+    
+    # First pass: Check for multi-word phrases (higher priority)
+    for category in category_priority:
+        if category not in RESTRICTED_TOPICS:
+            continue
+        phrases = RESTRICTED_TOPICS[category]
         matches = []
         for phrase in phrases:
             phrase_lower = phrase.lower()
             
-            # Check exact phrase match
+            # Multi-word phrase matching (highest priority)
+            if ' ' in phrase_lower:
+                if phrase_lower in text_lower or phrase_lower in text_normalized:
+                    if phrase not in matches:
+                        matches.append(phrase)
+        
+        if matches:
+            flagged[category] = matches
+    
+    # Second pass: Check for single words with fuzzy matching
+    for category in category_priority:
+        if category not in RESTRICTED_TOPICS:
+            continue
+        phrases = RESTRICTED_TOPICS[category]
+        matches = flagged.get(category, [])
+        
+        for phrase in phrases:
+            phrase_lower = phrase.lower()
+            
+            # Skip multi-word phrases (already handled above)
+            if ' ' in phrase_lower:
+                continue
+            
+            # Check exact single word match
             if phrase_lower in text_lower or phrase_lower in text_normalized:
                 if phrase not in matches:
                     matches.append(phrase)
                 continue
             
             # For single words, do fuzzy matching
-            if ' ' not in phrase and len(phrase) >= 3:
+            if len(phrase) >= 3:
                 words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
                 for word in words:
                     is_match, _, _ = fuzzy_match_word(word, [phrase], max_distance=2)

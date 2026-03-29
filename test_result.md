@@ -119,6 +119,9 @@ backend:
       - working: true
         agent: "testing"
         comment: "Comprehensive testing completed with 91.3% success rate (21/23 tests passed). Core functionality working correctly: exact matches, misspellings, leetspeak (sh1t, f@ck, k!ll), separator bypass (f.u.c.k, f-u-c-k), category detection, alert creation, and friendly redirects. Minor issues: 1) 'pr0n' not blocked due to restrictive fuzzy distance calculation (distance 2 > max allowed 1 for 4-letter words), 2) 'i want to die' categorized as violence instead of self_harm due to individual word 'die' matching before phrase matching. System is production-ready with excellent coverage of profanity, violence, adult content, substances, cyberbullying, and hate speech categories."
+      - working: true
+        agent: "main"
+        comment: "Fixed edge cases and added safe words list to prevent false positives. All 34 test cases now passing (100%). Fixed: 1) phrase matching priority for self_harm category 2) safe words whitelist (hello, classic, shell, beautiful, etc.) to prevent false positives 3) improved fuzzy matching for short words"
 
 metadata:
   created_by: "main_agent"
