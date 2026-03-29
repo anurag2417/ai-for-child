@@ -147,16 +147,30 @@ backend:
         agent: "testing"
         comment: "Authentication enforcement working correctly. All protected endpoints (chat/send, chat/conversations, parent/dashboard, parent/alerts) properly require JWT tokens. Unauthenticated requests return 401. User isolation verified - conversations and data properly scoped to authenticated user. JWT token validation and user lookup functioning properly."
 
+  - task: "Mandatory extension installation after signup"
+    implemented: true
+    working: true
+    file: "server.py, models.py, App.js, ExtensionSetup.jsx"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: "Added extension_installed field to User model. Created ExtensionSetup page with download link and confirmation flow. Chat page now requires extension to be installed. Users redirected to /setup-extension after login if extension not installed. Extension zip available for download."
+      - working: true
+        agent: "testing"
+        comment: "Extension installation feature fully functional. Tested complete flow: 1) New user registration returns extension_installed=false 2) GET /auth/extension-status correctly shows installation status 3) GET /auth/me includes extension_installed and extension_device_id fields 4) POST /auth/confirm-extension successfully updates user status with device_id 5) Login endpoint returns extension_installed field 6) All endpoints properly handle authentication. Extension confirmation flow working correctly with proper database persistence."
+
 metadata:
   created_by: "main_agent"
   version: "1.0"
-  test_sequence: 2
+  test_sequence: 3
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Supabase database migration"
-    - "Authentication enforcement for chat"
+    - "Mandatory extension installation after signup"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -168,3 +182,5 @@ agent_communication:
     message: "Fuzzy keyword filtering system tested comprehensively with 91.3% success rate. System successfully blocks: exact profanity matches, misspellings (fuuck->fuck), leetspeak (sh1t->shit, f@ck->fuck, k!ll->kill), separator bypass (f.u.c.k->fuck), and correctly categorizes content (profanity, violence, adult_content, substances, cyberbullying, hate_speech). Creates proper database alerts with category information and provides friendly bot redirects. Two minor edge cases identified: 1) 'pr0n' fuzzy matching limitation, 2) phrase vs individual word priority in categorization. Core filtering functionality is robust and production-ready."
   - agent: "testing"
     message: "Backend testing completed successfully (100% pass rate). All high-priority tasks verified: 1) Supabase PostgreSQL migration working - user registration, conversation persistence, alerts, dashboard stats all functional. 2) Authentication enforcement working - all protected endpoints require JWT tokens, proper 401 responses for unauthenticated requests. 3) Profanity filtering working - correctly blocks inappropriate content and creates alerts. 4) User data isolation verified - conversations properly scoped per user. System ready for production use."
+  - agent: "testing"
+    message: "Extension installation feature testing completed successfully (8/8 tests passed). All extension-related endpoints working correctly: 1) POST /auth/register returns extension_installed=false for new users 2) GET /auth/extension-status provides current installation status 3) GET /auth/me includes extension_installed and extension_device_id fields 4) POST /auth/confirm-extension successfully updates user with device_id 5) POST /auth/login returns extension_installed field 6) Complete flow tested: register → check status → confirm extension → verify persistence. Backend extension functionality fully operational."

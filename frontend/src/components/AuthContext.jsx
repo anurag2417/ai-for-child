@@ -51,8 +51,23 @@ export function AuthProvider({ children }) {
     window.location.href = "/login";
   };
 
+  // Refresh user data (useful after extension confirmation)
+  const refreshUser = async () => {
+    try {
+      const token = localStorage.getItem("buddybot_token");
+      if (!token) return;
+      const res = await axios.get(`${API}/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+        withCredentials: true,
+      });
+      setUser(res.data);
+    } catch {
+      // Ignore errors
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, checkAuth }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, checkAuth, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

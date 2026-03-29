@@ -20,8 +20,11 @@ from models import Base
 config = context.config
 
 # Set database URL from environment (sync version without +asyncpg)
+# Use raw_value=True to avoid interpolation issues with special characters
 database_url = os.environ.get('DATABASE_URL')
-config.set_main_option('sqlalchemy.url', database_url)
+# For alembic.ini, we need to escape % as %%
+escaped_url = database_url.replace('%', '%%') if database_url else ''
+config.set_main_option('sqlalchemy.url', escaped_url)
 
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:

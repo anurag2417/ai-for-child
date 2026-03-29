@@ -6,8 +6,9 @@ import AuthCallback from "@/components/AuthCallback";
 import ParentDashboard from "@/components/ParentDashboard";
 import ParentConversationDetail from "@/components/ParentConversationDetail";
 import PasswordGate from "@/components/PasswordGate";
+import ExtensionSetup from "@/components/ExtensionSetup";
 
-function ProtectedRoute({ children, requirePasswordGate = false }) {
+function ProtectedRoute({ children, requirePasswordGate = false, requireExtension = false }) {
   const { user, loading } = useAuth();
 
   if (loading) {
@@ -19,6 +20,11 @@ function ProtectedRoute({ children, requirePasswordGate = false }) {
   }
 
   if (!user) return <Navigate to="/login" replace />;
+
+  // Check if extension is required and not installed
+  if (requireExtension && !user.extension_installed) {
+    return <Navigate to="/setup-extension" replace />;
+  }
 
   // Only use PasswordGate for parent dashboard routes
   if (requirePasswordGate) {
@@ -39,12 +45,17 @@ function AppRouter() {
   return (
     <Routes>
       <Route path="/" element={
-        <ProtectedRoute>
+        <ProtectedRoute requireExtension={true}>
           <ChatPage />
         </ProtectedRoute>
       } />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/auth/callback" element={<AuthCallback />} />
+      <Route path="/setup-extension" element={
+        <ProtectedRoute>
+          <ExtensionSetup />
+        </ProtectedRoute>
+      } />
       <Route
         path="/parent"
         element={

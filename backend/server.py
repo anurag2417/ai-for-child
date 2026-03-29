@@ -674,6 +674,7 @@ async def register(data: RegisterRequest, response: Response, db: AsyncSession =
         "role": "parent",
         "child_id": child.id,
         "token": access_token,
+        "extension_installed": False,  # New users haven't installed extension yet
     }
 
 
@@ -702,6 +703,7 @@ async def login(data: LoginRequest, response: Response, db: AsyncSession = Depen
         "phone": user.phone or "",
         "role": user.role or "parent",
         "token": access_token,
+        "extension_installed": user.extension_installed or False,
     }
 
 
@@ -758,6 +760,7 @@ async def google_auth(data: GoogleSessionRequest, response: Response, db: AsyncS
     refresh_token = create_refresh_token(user.id)
     set_auth_cookies(response, access_token, refresh_token)
 
+    is_new_user = not existing
     return {
         "user_id": user.id,
         "name": user.name,
@@ -765,6 +768,8 @@ async def google_auth(data: GoogleSessionRequest, response: Response, db: AsyncS
         "phone": user.phone or "",
         "role": user.role or "parent",
         "token": access_token,
+        "extension_installed": user.extension_installed or False,
+        "is_new_user": is_new_user,
     }
 
 
@@ -782,7 +787,39 @@ async def auth_me(request: Request, db: AsyncSession = Depends(get_db)):
         "phone": user.phone or "",
         "role": user.role or "parent",
         "picture": user.picture or "",
+        "extension_installed": user.extension_installed or False,
+        "extension_device_id": user.extension_device_id,
         "children": [{"child_id": c.id, "name": c.name, "age": c.age} for c in children]
+    }
+
+
+class ExtensionConfirmRequest(BaseModel):
+    device_id: str
+
+
+@api_router.post("/auth/confirm-extension")
+async def confirm_extension(data: ExtensionConfirmRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    """Confirm that the user has installed the browser extension."""
+    user = await get_current_user(request, db)
+    
+    user.extension_installed = True
+    user.extension_device_id = data.device_id
+    await db.commit()
+    
+    return {
+        "status": "confirmed",
+        "extension_installed": True,
+        "device_id": data.device_id
+    }
+
+
+@api_router.get("/auth/extension-status")
+async def extension_status(request: Request, db: AsyncSession = Depends(get_db)):
+    """Check if current user has installed the extension."""
+    user = await get_current_user(request, db)
+    return {
+        "extension_installed": user.extension_installed or False,
+        "device_id": user.extension_device_id
     }
 
 
@@ -1229,7 +1266,7 @@ async def receive_packets(batch: PacketBatch, db: AsyncSession = Depends(get_db)
 
 
 @api_router.get("/extension/status/{device_id}")
-async def extension_status(device_id: str, db: AsyncSession = Depends(get_db)):
+async def get_device_extension_status(device_id: str, db: AsyncSession = Depends(get_db)):
     packet_count = await db.execute(select(func.count()).select_from(BrowsingPacket).where(BrowsingPacket.device_id == device_id))
     packet_count = packet_count.scalar()
     

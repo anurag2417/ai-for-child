@@ -32,6 +32,8 @@ class User(Base):
     auth_provider = Column(String(50), default="email")  # "email" or "google"
     picture = Column(String(500), default="")
     role = Column(String(50), default="parent")
+    extension_installed = Column(Boolean, default=False)  # Track if extension is installed
+    extension_device_id = Column(String(100), nullable=True)  # Device ID from extension
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     
     # Relationships
