@@ -9,6 +9,11 @@ import {
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const BOT_AVATAR = "https://static.prod-images.emergentagent.com/jobs/c981f2d7-a198-4751-9292-bd3ea3733509/images/d376ea840d4cf39f522230889ca79fd1bbc7322d0f233bce72b70b50dca8ebdc.png";
 
+function authHeaders() {
+  const token = localStorage.getItem("buddybot_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 function SafetyBadge({ level }) {
   const styles = {
     SAFE: "bg-emerald-100 text-emerald-800 border-emerald-300",
@@ -32,7 +37,7 @@ export default function ParentConversationDetail() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await axios.get(`${API}/parent/conversations/${id}`);
+      const res = await axios.get(`${API}/parent/conversations/${id}`, { headers: authHeaders(), withCredentials: true });
       setData(res.data);
     } catch (e) { console.error(e); }
   }, [id]);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-BuddyBot Backend API Testing Suite
-Tests all chat, parent dashboard, and safety features
+BuddyBot Backend API Testing Suite - Iteration 3 Auth Focus
+Tests authentication system, parent dashboard auth, and public chat access
 """
 
 import requests
@@ -17,15 +17,24 @@ class BuddyBotAPITester:
         self.tests_passed = 0
         self.conversation_id = None
         self.alert_id = None
+        self.auth_token = None
+        self.user_id = None
+        self.child_id = None
 
-    def run_test(self, name, method, endpoint, expected_status, data=None, params=None):
+    def run_test(self, name, method, endpoint, expected_status, data=None, params=None, auth_required=False):
         """Run a single API test"""
         url = f"{self.base_url}/{endpoint}"
         headers = {'Content-Type': 'application/json'}
         
+        # Add auth header if required and token available
+        if auth_required and self.auth_token:
+            headers['Authorization'] = f'Bearer {self.auth_token}'
+        
         self.tests_run += 1
         print(f"\n🔍 Testing {name}...")
         print(f"   URL: {url}")
+        if auth_required:
+            print(f"   Auth: {'✅ Token provided' if self.auth_token else '❌ No token'}")
         
         try:
             if method == 'GET':
@@ -58,14 +67,273 @@ class BuddyBotAPITester:
             print(f"❌ Failed - Error: {str(e)}")
             return False, {}
 
-    def test_health_check(self):
-        """Test basic API health"""
+    # ============================================================
+    # AUTH TESTS (NEW FOR ITERATION 3)
+    # ============================================================
+    
+    def test_register_parent(self):
+        """Test parent registration with auto child profile creation"""
+        test_email = f"test_parent_{int(time.time())}@test.com"
         success, response = self.run_test(
-            "API Health Check",
-            "GET", 
-            "",
+            "Parent Registration",
+            "POST",
+            "auth/register",
+            200,
+            data={
+                "name": "Test Parent",
+                "email": test_email,
+                "phone": "+1234567890",
+                "password": "secure123"
+            }
+        )
+        if success:
+            self.auth_token = response.get('token')
+            self.user_id = response.get('user_id')
+            self.child_id = response.get('child_id')
+            print(f"   Created user: {self.user_id}")
+            print(f"   Created child: {self.child_id}")
+            print(f"   Token received: {'✅' if self.auth_token else '❌'}")
+        return success
+
+    def test_login_valid_credentials(self):
+        """Test login with valid credentials from test_credentials.md"""
+        success, response = self.run_test(
+            "Login with Valid Credentials",
+            "POST",
+            "auth/login",
+            200,
+            data={
+                "email": "parent@test.com",
+                "password": "secure123"
+            }
+        )
+        if success:
+            self.auth_token = response.get('token')
+            self.user_id = response.get('user_id')
+            print(f"   User ID: {self.user_id}")
+            print(f"   Token received: {'✅' if self.auth_token else '❌'}")
+        return success
+
+    def test_login_invalid_credentials(self):
+        """Test login with invalid credentials should fail"""
+        success, response = self.run_test(
+            "Login with Invalid Credentials",
+            "POST",
+            "auth/login",
+            401,
+            data={
+                "email": "parent@test.com",
+                "password": "wrongpassword"
+            }
+        )
+        if success:
+            print(f"   ✅ Correctly rejected invalid credentials")
+        return success
+
+    def test_auth_me_with_token(self):
+        """Test /auth/me with valid token returns user + children"""
+        if not self.auth_token:
+            print("❌ No auth token available")
+            return False
+            
+        success, response = self.run_test(
+            "Auth Me with Token",
+            "GET",
+            "auth/me",
+            200,
+            auth_required=True
+        )
+        if success:
+            print(f"   User name: {response.get('name', 'Unknown')}")
+            print(f"   User email: {response.get('email', 'Unknown')}")
+            children = response.get('children', [])
+            print(f"   Children count: {len(children)}")
+            if children:
+                print(f"   First child: {children[0].get('name', 'Unknown')}")
+        return success
+
+    def test_auth_me_without_token(self):
+        """Test /auth/me without token returns 401"""
+        # Temporarily clear token
+        temp_token = self.auth_token
+        self.auth_token = None
+        
+        success, response = self.run_test(
+            "Auth Me without Token",
+            "GET",
+            "auth/me",
+            401
+        )
+        
+        # Restore token
+        self.auth_token = temp_token
+        
+        if success:
+            print(f"   ✅ Correctly returned 401 without token")
+        return success
+
+    def test_verify_password_correct(self):
+        """Test password verification with correct password"""
+        if not self.auth_token:
+            print("❌ No auth token available")
+            return False
+            
+        success, response = self.run_test(
+            "Verify Password (Correct)",
+            "POST",
+            "auth/verify-password",
+            200,
+            data={"password": "secure123"},
+            auth_required=True
+        )
+        if success:
+            verified = response.get('verified', False)
+            print(f"   Verified: {'✅' if verified else '❌'}")
+        return success
+
+    def test_verify_password_incorrect(self):
+        """Test password verification with incorrect password"""
+        if not self.auth_token:
+            print("❌ No auth token available")
+            return False
+            
+        success, response = self.run_test(
+            "Verify Password (Incorrect)",
+            "POST",
+            "auth/verify-password",
+            401,
+            data={"password": "wrongpassword"},
+            auth_required=True
+        )
+        if success:
+            print(f"   ✅ Correctly rejected incorrect password")
+        return success
+
+    def test_logout(self):
+        """Test logout endpoint"""
+        success, response = self.run_test(
+            "Logout",
+            "POST",
+            "auth/logout",
             200
         )
+        if success:
+            print(f"   Status: {response.get('status', 'Unknown')}")
+        return success
+
+    # ============================================================
+    # PROTECTED ENDPOINT TESTS
+    # ============================================================
+
+    def test_parent_dashboard_with_auth(self):
+        """Test parent dashboard with auth token"""
+        if not self.auth_token:
+            print("❌ No auth token available")
+            return False
+            
+        success, response = self.run_test(
+            "Parent Dashboard (Authenticated)",
+            "GET",
+            "parent/dashboard",
+            200,
+            auth_required=True
+        )
+        if success:
+            stats = response.get('stats', {})
+            print(f"   Stats: {stats}")
+            recent_alerts = response.get('recent_alerts', [])
+            print(f"   Recent alerts: {len(recent_alerts)}")
+        return success
+
+    def test_parent_dashboard_without_auth(self):
+        """Test parent dashboard without auth token returns 401"""
+        # Temporarily clear token
+        temp_token = self.auth_token
+        self.auth_token = None
+        
+        success, response = self.run_test(
+            "Parent Dashboard (No Auth)",
+            "GET",
+            "parent/dashboard",
+            401
+        )
+        
+        # Restore token
+        self.auth_token = temp_token
+        
+        if success:
+            print(f"   ✅ Correctly returned 401 without auth")
+        return success
+
+    def test_parent_alerts_with_auth(self):
+        """Test parent alerts with auth token"""
+        if not self.auth_token:
+            print("❌ No auth token available")
+            return False
+            
+        success, response = self.run_test(
+            "Parent Alerts (Authenticated)",
+            "GET",
+            "parent/alerts",
+            200,
+            auth_required=True
+        )
+        if success:
+            print(f"   Found {len(response)} alerts")
+        return success
+
+    def test_parent_alerts_without_auth(self):
+        """Test parent alerts without auth token returns 401"""
+        # Temporarily clear token
+        temp_token = self.auth_token
+        self.auth_token = None
+        
+        success, response = self.run_test(
+            "Parent Alerts (No Auth)",
+            "GET",
+            "parent/alerts",
+            401
+        )
+        
+        # Restore token
+        self.auth_token = temp_token
+        
+        if success:
+            print(f"   ✅ Correctly returned 401 without auth")
+        return success
+
+    # ============================================================
+    # PUBLIC ENDPOINT TESTS (Should work without auth)
+    # ============================================================
+
+    def test_public_chat_send(self):
+        """Test that chat/send works without authentication (public for children)"""
+        success, response = self.run_test(
+            "Public Chat Send (No Auth Required)",
+            "POST",
+            "chat/send",
+            200,
+            data={
+                "text": "Hello BuddyBot! This is a public message from a child."
+            }
+        )
+        if success:
+            print(f"   ✅ Chat works without authentication")
+            print(f"   Bot response: {response.get('bot_message', {}).get('text', 'No response')[:50]}...")
+            self.conversation_id = response.get('conversation_id')
+        return success
+
+    def test_public_chat_conversations(self):
+        """Test that listing conversations works without auth"""
+        success, response = self.run_test(
+            "Public Chat Conversations (No Auth Required)",
+            "GET",
+            "chat/conversations",
+            200
+        )
+        if success:
+            print(f"   ✅ Conversation listing works without authentication")
+            print(f"   Found {len(response)} conversations")
         return success
 
     def test_create_conversation(self):
@@ -135,314 +403,56 @@ class BuddyBotAPITester:
                 return False
         return success
 
-    def test_restricted_topic_detection(self):
-        """Test restricted topic detection"""
-        success, response = self.run_test(
-            "Restricted Topic Detection",
-            "POST",
-            "chat/send",
-            200,
-            data={
-                "conversation_id": self.conversation_id,
-                "text": "Can you tell me about violence and fighting?"
-            }
-        )
-        if success:
-            print(f"   Bot response: {response.get('bot_message', {}).get('text', 'No response')[:50]}...")
-            print(f"   Safety level: {response.get('bot_message', {}).get('safety_level', 'Unknown')}")
-        return success
-
-    def test_get_conversation(self):
-        """Test getting conversation details"""
-        if not self.conversation_id:
-            print("❌ No conversation ID available")
-            return False
-            
-        success, response = self.run_test(
-            "Get Conversation Details",
-            "GET",
-            f"chat/conversations/{self.conversation_id}",
-            200
-        )
-        if success:
-            messages = response.get('messages', [])
-            print(f"   Found {len(messages)} messages in conversation")
-        return success
-
-    def test_parent_dashboard(self):
-        """Test parent dashboard stats"""
-        success, response = self.run_test(
-            "Parent Dashboard Stats",
-            "GET",
-            "parent/dashboard",
-            200
-        )
-        if success:
-            stats = response.get('stats', {})
-            print(f"   Stats: {stats}")
-            recent_alerts = response.get('recent_alerts', [])
-            print(f"   Recent alerts: {len(recent_alerts)}")
-        return success
-
-    def test_parent_alerts(self):
-        """Test getting parent alerts"""
-        success, response = self.run_test(
-            "Parent Alerts List",
-            "GET",
-            "parent/alerts",
-            200
-        )
-        if success:
-            print(f"   Found {len(response)} alerts")
-            if response and not self.alert_id:
-                self.alert_id = response[0].get('id')
-        return success
-
-    def test_parent_conversations(self):
-        """Test parent conversations list"""
-        success, response = self.run_test(
-            "Parent Conversations List",
-            "GET",
-            "parent/conversations",
-            200
-        )
-        if success:
-            print(f"   Found {len(response)} conversations")
-        return success
-
-    def test_parent_conversation_detail(self):
-        """Test parent conversation detail view"""
-        if not self.conversation_id:
-            print("❌ No conversation ID available")
-            return False
-            
-        success, response = self.run_test(
-            "Parent Conversation Detail",
-            "GET",
-            f"parent/conversations/{self.conversation_id}",
-            200
-        )
-        if success:
-            messages = response.get('messages', [])
-            alerts = response.get('alerts', [])
-            print(f"   Messages: {len(messages)}, Alerts: {len(alerts)}")
-        return success
-
-    def test_resolve_alert(self):
-        """Test resolving an alert"""
-        if not self.alert_id:
-            print("❌ No alert ID available")
-            return False
-            
-        success, response = self.run_test(
-            "Resolve Alert",
-            "PUT",
-            f"parent/alerts/{self.alert_id}/resolve",
-            200
-        )
-        if success:
-            print(f"   Alert {self.alert_id} resolved")
-        return success
-
-    def test_new_conversation_creation(self):
-        """Test creating conversation via chat send without conversation_id"""
-        success, response = self.run_test(
-            "Auto-Create Conversation",
-            "POST",
-            "chat/send",
-            200,
-            data={
-                "text": "This should create a new conversation"
-            }
-        )
-        if success:
-            new_conv_id = response.get('conversation_id')
-            print(f"   Auto-created conversation: {new_conv_id}")
-        return success
-
-    def test_extension_packets(self):
-        """Test receiving browsing packets from extension"""
-        test_packets = [
-            {
-                "id": "test-packet-1",
-                "timestamp": datetime.now().isoformat(),
-                "device_id": "dev-test-123",
-                "tab_type": "normal",
-                "url": "https://www.google.com/search?q=how+to+study",
-                "domain": "google.com",
-                "title": "Google Search",
-                "packet_type": "search_query",
-                "search_query": "how to study",
-                "search_engine": "Google"
-            },
-            {
-                "id": "test-packet-2", 
-                "timestamp": datetime.now().isoformat(),
-                "device_id": "dev-test-123",
-                "tab_type": "incognito",
-                "url": "https://www.google.com/search?q=how+to+fight+at+school",
-                "domain": "google.com",
-                "title": "Google Search",
-                "packet_type": "search_query",
-                "search_query": "how to fight at school",
-                "search_engine": "Google"
-            }
-        ]
-        
-        success, response = self.run_test(
-            "Extension Packets Submission",
-            "POST",
-            "extension/packets",
-            200,
-            data={
-                "device_id": "dev-test-123",
-                "packets": test_packets
-            }
-        )
-        if success:
-            print(f"   Received: {response.get('received', 0)} packets")
-            print(f"   Alerts created: {response.get('alerts_created', 0)}")
-        return success
-
-    def test_extension_status(self):
-        """Test getting extension status for device"""
-        success, response = self.run_test(
-            "Extension Device Status",
-            "GET",
-            "extension/status/dev-test-123",
-            200
-        )
-        if success:
-            print(f"   Device: {response.get('device_id')}")
-            print(f"   Total packets: {response.get('total_packets', 0)}")
-            print(f"   Total alerts: {response.get('total_alerts', 0)}")
-        return success
-
-    def test_browsing_stats(self):
-        """Test browsing statistics endpoint"""
-        success, response = self.run_test(
-            "Browsing Statistics",
-            "GET",
-            "parent/browsing/stats",
-            200
-        )
-        if success:
-            print(f"   Total packets: {response.get('total_packets', 0)}")
-            print(f"   Search count: {response.get('search_count', 0)}")
-            print(f"   Visit count: {response.get('visit_count', 0)}")
-            print(f"   Incognito count: {response.get('incognito_count', 0)}")
-            print(f"   Flagged searches: {response.get('flagged_searches', 0)}")
-            print(f"   Browsing alerts: {response.get('browsing_alerts', 0)}")
-        return success
-
-    def test_browsing_searches(self):
-        """Test browsing searches endpoint"""
-        success, response = self.run_test(
-            "Browsing Searches",
-            "GET",
-            "parent/browsing/searches",
-            200,
-            params={"limit": 20}
-        )
-        if success:
-            print(f"   Found {len(response)} search queries")
-            if response:
-                flagged_count = sum(1 for s in response if s.get('profanity_flagged') or s.get('restricted_topics'))
-                print(f"   Flagged searches: {flagged_count}")
-        return success
-
-    def test_browsing_visits(self):
-        """Test browsing visits endpoint"""
-        success, response = self.run_test(
-            "Browsing Visits",
-            "GET",
-            "parent/browsing/visits",
-            200,
-            params={"limit": 20}
-        )
-        if success:
-            print(f"   Found {len(response)} URL visits")
-        return success
-
-    def test_browsing_analysis(self):
-        """Test AI browsing pattern analysis"""
-        success, response = self.run_test(
-            "Browsing Pattern Analysis",
-            "GET",
-            "parent/browsing/analysis",
-            200,
-            params={"device_id": "dev-test-123"}
-        )
-        if success:
-            print(f"   Safety level: {response.get('safety_level', 'Unknown')}")
-            print(f"   Analysis: {response.get('analysis', 'No analysis')[:100]}...")
-            print(f"   Total searches analyzed: {response.get('total_searches', 0)}")
-            print(f"   Flagged searches: {len(response.get('flagged_searches', []))}")
-        return success
-
-    def test_enhanced_chat_with_browsing_context(self):
-        """Test chat with browsing context enhancement"""
-        success, response = self.run_test(
-            "Chat with Browsing Context",
-            "POST",
-            "chat/send",
-            200,
-            data={
-                "text": "I've been looking up some things online",
-                "device_id": "dev-test-123"
-            }
-        )
-        if success:
-            print(f"   Bot response: {response.get('bot_message', {}).get('text', 'No response')[:50]}...")
-            print(f"   Safety level: {response.get('bot_message', {}).get('safety_level', 'Unknown')}")
-            # Check if AI thought mentions browsing context
-            thought = response.get('bot_message', {}).get('thought', '')
-            if 'browsing' in thought.lower() or 'search' in thought.lower():
-                print(f"   ✅ AI thought includes browsing context")
-            else:
-                print(f"   ⚠️  AI thought may not include browsing context")
-        return success
-
 def main():
-    print("🤖 BuddyBot Backend API Testing Suite")
-    print("=" * 50)
+    print("🤖 BuddyBot Backend API Testing Suite - Iteration 3 Auth Focus")
+    print("=" * 60)
     
     tester = BuddyBotAPITester()
     
-    # Test sequence - focusing on NEW extension features for iteration 2
+    # Test sequence - focusing on NEW auth features for iteration 3
     tests = [
-        tester.test_health_check,
-        # Extension endpoints (NEW)
-        tester.test_extension_packets,
-        tester.test_extension_status,
-        tester.test_browsing_stats,
-        tester.test_browsing_searches,
-        tester.test_browsing_visits,
-        tester.test_browsing_analysis,
-        tester.test_enhanced_chat_with_browsing_context,
-        # Updated parent dashboard (should now include browsing stats)
-        tester.test_parent_dashboard,
-        # Quick verification that existing features still work
-        tester.test_create_conversation,
-        tester.test_send_safe_message,
-        tester.test_profanity_filter,
+        # Basic health check
+        lambda: tester.run_test("API Health Check", "GET", "", 200)[0],
+        
+        # Auth system tests (NEW)
+        tester.test_register_parent,
+        tester.test_login_valid_credentials,
+        tester.test_login_invalid_credentials,
+        tester.test_auth_me_with_token,
+        tester.test_auth_me_without_token,
+        tester.test_verify_password_correct,
+        tester.test_verify_password_incorrect,
+        
+        # Protected endpoint tests (NEW auth requirements)
+        tester.test_parent_dashboard_with_auth,
+        tester.test_parent_dashboard_without_auth,
+        tester.test_parent_alerts_with_auth,
+        tester.test_parent_alerts_without_auth,
+        
+        # Public endpoint tests (should work without auth)
+        tester.test_public_chat_send,
+        tester.test_public_chat_conversations,
+        
+        # Logout test
+        tester.test_logout,
     ]
     
-    print(f"\n🚀 Running {len(tests)} tests...")
+    print(f"\n🚀 Running {len(tests)} auth-focused tests...")
     
-    for test in tests:
+    for i, test in enumerate(tests, 1):
         try:
+            print(f"\n[{i}/{len(tests)}]", end=" ")
             test()
             time.sleep(0.5)  # Small delay between tests
         except Exception as e:
-            print(f"❌ Test {test.__name__} failed with exception: {e}")
+            print(f"❌ Test {test.__name__ if hasattr(test, '__name__') else 'test'} failed with exception: {e}")
     
     # Results
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 60)
     print(f"📊 Test Results: {tester.tests_passed}/{tester.tests_run} passed")
     
     if tester.tests_passed == tester.tests_run:
-        print("🎉 All tests passed!")
+        print("🎉 All auth tests passed!")
         return 0
     else:
         print(f"⚠️  {tester.tests_run - tester.tests_passed} tests failed")

@@ -178,7 +178,7 @@ export default function ChatPage() {
 
         <div className="p-4 border-t border-slate-100">
           <a
-            href="/parent"
+            href="/login"
             data-testid="parent-dashboard-link"
             className="flex items-center gap-2.5 text-emerald-700 hover:text-emerald-800 font-semibold text-base transition-colors p-2.5 rounded-xl hover:bg-emerald-50"
           >

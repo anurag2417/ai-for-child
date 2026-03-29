@@ -1,13 +1,19 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
+import { useAuth } from "@/components/AuthContext";
 import axios from "axios";
 import {
   MessageCircle, AlertTriangle, Shield, CheckCircle,
   ArrowLeft, Eye, Bell, ChevronRight, Clock,
-  Globe, Search, Incognito, Activity, Wifi, BarChart3
+  Globe, Search, Activity, Wifi, BarChart3, LogOut
 } from "lucide-react";
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+
+function authHeaders() {
+  const token = localStorage.getItem("buddybot_token");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 
 function StatCard({ icon: Icon, label, value, color, testId }) {
   const colorMap = {
@@ -53,6 +59,7 @@ function SeverityBadge({ severity }) {
 }
 
 export default function ParentDashboard() {
+  const { user, logout } = useAuth();
   const [dashboard, setDashboard] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [alerts, setAlerts] = useState([]);
@@ -65,10 +72,11 @@ export default function ParentDashboard() {
 
   const fetchData = useCallback(async () => {
     try {
+      const h = { headers: authHeaders(), withCredentials: true };
       const [dashRes, convRes, alertRes] = await Promise.all([
-        axios.get(`${API}/parent/dashboard`),
-        axios.get(`${API}/parent/conversations`),
-        axios.get(`${API}/parent/alerts`),
+        axios.get(`${API}/parent/dashboard`, h),
+        axios.get(`${API}/parent/conversations`, h),
+        axios.get(`${API}/parent/alerts`, h),
       ]);
       setDashboard(dashRes.data);
       setConversations(convRes.data);
@@ -78,10 +86,11 @@ export default function ParentDashboard() {
 
   const fetchBrowsingData = useCallback(async () => {
     try {
+      const h = { headers: authHeaders(), withCredentials: true };
       const [statsRes, searchRes, visitRes] = await Promise.all([
-        axios.get(`${API}/parent/browsing/stats`),
-        axios.get(`${API}/parent/browsing/searches?limit=30`),
-        axios.get(`${API}/parent/browsing/visits?limit=30`),
+        axios.get(`${API}/parent/browsing/stats`, h),
+        axios.get(`${API}/parent/browsing/searches?limit=30`, h),
+        axios.get(`${API}/parent/browsing/visits?limit=30`, h),
       ]);
       setBrowsingStats(statsRes.data);
       setBrowsingSearches(searchRes.data);
@@ -96,7 +105,7 @@ export default function ParentDashboard() {
 
   const resolveAlert = async (alertId) => {
     try {
-      await axios.put(`${API}/parent/alerts/${alertId}/resolve`);
+      await axios.put(`${API}/parent/alerts/${alertId}/resolve`, {}, { headers: authHeaders(), withCredentials: true });
       fetchData();
     } catch (e) { console.error(e); }
   };
@@ -104,7 +113,7 @@ export default function ParentDashboard() {
   const runAnalysis = async () => {
     setAnalysisLoading(true);
     try {
-      const res = await axios.get(`${API}/parent/browsing/analysis`);
+      const res = await axios.get(`${API}/parent/browsing/analysis`, { headers: authHeaders(), withCredentials: true });
       setBrowsingAnalysis(res.data);
     } catch (e) { console.error(e); }
     setAnalysisLoading(false);
@@ -136,6 +145,20 @@ export default function ParentDashboard() {
             <AlertTriangle className="w-4 h-4" strokeWidth={3} />
             {stats.unresolved_alerts} Unresolved
           </span>
+        )}
+        {!stats.unresolved_alerts && <div className="ml-auto" />}
+        {user && (
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-semibold text-slate-500">{user.name}</span>
+            <button
+              data-testid="logout-btn"
+              onClick={logout}
+              className="p-2 rounded-xl hover:bg-slate-100 transition-colors text-slate-400 hover:text-rose-500"
+              title="Logout"
+            >
+              <LogOut className="w-5 h-5" strokeWidth={2.5} />
+            </button>
+          </div>
         )}
       </header>
 
