@@ -509,60 +509,89 @@ def check_profanity(text: str) -> dict:
         'beautiful', 'beautifully', 'beauty', 'day', 'days', 'today',
         'database', 'dabble', 'dab'  # 'dab' as drug slang only in specific contexts
     }
+
+    words_in_text = re.findall(r'\b[a-z0-9@$!#%^&*]+\b', text_lower)
+    words_normalized = re.findall(r'\b[a-z0-9]+\b', text_normalized)
+
+    # Combine unique words found in the message
+    all_input_words = set(words_in_text + words_normalized)
     
-    # Extract words from text (split by whitespace and common punctuation)
-    words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
+    # # Extract words from text (split by whitespace and common punctuation)
+    # words = re.findall(r'[a-zA-Z0-9@$!#%^&*]+', text_lower)
     
-    # Also check the normalized version
-    words_normalized = re.findall(r'[a-z]+', text_normalized)
+    # # Also check the normalized version
+    # words_normalized = re.findall(r'[a-z]+', text_normalized)
     
-    all_words = set(words + words_normalized)
+    # all_words = set(words + words_normalized)
     
-    for word in all_words:
-        # Skip very short words
+    # for word in all_words:
+    #     # Skip very short words
+    #     if len(word) < 3:
+    #         continue
+
+    for word in all_input_words:
         if len(word) < 3:
             continue
         
-        # Skip known safe words
-        if word.lower() in SAFE_WORDS:
+        # # Skip known safe words
+        # if word.lower() in SAFE_WORDS:
+        #     continue
+        if word in SAFE_WORDS:
             continue
             
-        word_normalized = normalize_leetspeak(word)
+        # word_normalized = normalize_leetspeak(word)
         
-        # Skip if normalized word is a safe word
-        if word_normalized in SAFE_WORDS:
-            continue
+        # # Skip if normalized word is a safe word
+        # if word_normalized in SAFE_WORDS:
+        #     continue
         
-        word_matched = False
-        
+        # word_matched = False
+
         for blocked in BLOCKED_WORDS:
             blocked_lower = blocked.lower()
-            
-            # Skip if word lengths are too different
-            length_diff = abs(len(word_normalized) - len(blocked_lower))
-            if length_diff > 3:
-                continue
-            
-            # Exact match (highest priority)
-            if word_normalized == blocked_lower or word.lower() == blocked_lower:
+
+            if word == blocked_lower:
                 if blocked not in matched:
                     matched.append(blocked)
-                word_matched = True
                 break
+
+            if len(blocked_lower) >= 4 and word.startswith(blocked_lower):
+                suffix = word[len(blocked_lower):]
+                if suffix in ['', 's', 'es', 'ed', 'er', 'ing', 'y']:
+                    if blocked not in matched:
+                        matched.append(blocked)
+                    break
+        
+        # for blocked in BLOCKED_WORDS:
+        #     blocked_lower = blocked.lower()
+
+
             
-            # Word is a variant with suffix (e.g., "fucking" matches "fuck")
-            # Require the blocked word to be at least 4 chars and be significant portion
-            if len(blocked_lower) >= 4:
-                if word_normalized.startswith(blocked_lower):
-                    extra_chars = len(word_normalized) - len(blocked_lower)
-                    # Only allow common suffixes (ing, ed, er, s, y, ly)
-                    if extra_chars <= 3:
-                        suffix = word_normalized[len(blocked_lower):]
-                        if suffix in ['', 's', 'y', 'ed', 'er', 'ing', 'ly', 'ish', 'ness']:
-                            if blocked not in matched:
-                                matched.append(blocked)
-                            word_matched = True
-                            break
+            # # Skip if word lengths are too different
+            # length_diff = abs(len(word_normalized) - len(blocked_lower))
+            # if length_diff > 3:
+            #     continue
+            
+            # # Exact match (highest priority)
+            # if word_normalized == blocked_lower or word.lower() == blocked_lower:
+            #     if blocked not in matched:
+            #         matched.append(blocked)
+            #     word_matched = True
+            #     break
+            
+            # # Word is a variant with suffix (e.g., "fucking" matches "fuck")
+            # # Require the blocked word to be at least 4 chars and be significant portion
+            # if len(blocked_lower) >= 4:
+            #     if word_normalized.startswith(blocked_lower):
+            #         extra_chars = len(word_normalized) - len(blocked_lower)
+            #         # Only allow common suffixes (ing, ed, er, s, y, ly)
+            #         if extra_chars <= 3:
+            #             suffix = word_normalized[len(blocked_lower):]
+            #             if suffix in ['', 's', 'y', 'ed', 'er', 'ing', 'ly', 'ish', 'ness']:
+            #                 if blocked not in matched:
+            #                     matched.append(blocked)
+            #                 word_matched = True
+            #                 break
             
             # Check for leetspeak variations with 1 char difference (for short words)
             if len(blocked_lower) <= 5 and len(word_normalized) <= 6 and length_diff <= 1:
@@ -574,11 +603,18 @@ def check_profanity(text: str) -> dict:
                     break
         
         # Fuzzy match if no exact/near-exact match found
-        if not word_matched:
-            is_match, blocked_word, distance = fuzzy_match_word(word, BLOCKED_WORDS, max_distance=2)
-            if is_match and blocked_word not in matched and blocked_word not in fuzzy_matched:
-                # Double check it's not a safe word being matched
-                if word.lower() not in SAFE_WORDS and word_normalized not in SAFE_WORDS:
+        # if not word_matched:
+        #     is_match, blocked_word, distance = fuzzy_match_word(word, BLOCKED_WORDS, max_distance=2)
+        #     if is_match and blocked_word not in matched and blocked_word not in fuzzy_matched:
+        #         # Double check it's not a safe word being matched
+        #         if word.lower() not in SAFE_WORDS and word_normalized not in SAFE_WORDS:
+        #             fuzzy_matched.append(blocked_word)3
+
+        if blocked_lower not in matched:
+            is_match, blocked_word, distance = fuzzy_match_word(word, BLOCKED_WORDS, max_distance=1)
+            if is_match and blocked_word not in matched:
+                # Extra safety: Ensure the word length is nearly identical
+                if abs(len(word) - len(blocked_word)) <= 1:
                     fuzzy_matched.append(blocked_word)
     
     # Combine results
