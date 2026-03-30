@@ -51,22 +51,22 @@ export default function LoginPage() {
   return (
     <div
       data-testid="login-page"
-      className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-100 via-white to-slate-50 px-4"
+      className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-slate-950 px-4"
     >
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-emerald-100 mb-4">
             <Shield className="w-10 h-10 text-emerald-500" strokeWidth={2.5} />
           </div>
-          <h1 className="font-['Nunito'] text-3xl font-extrabold text-sky-900">
+          <h1 className="font-['Nunito'] text-3xl font-extrabold text-sky-200">
             {isRegister ? "Create Parent Account" : "Parent Login"}
           </h1>
-          <p className="text-base font-medium text-slate-500 mt-2">
+          <p className="text-base font-medium text-slate-300 mt-2">
             {isRegister ? "Set up your account to keep your child safe" : "Access your BuddyBot parent dashboard"}
           </p>
         </div>
 
-        <div className="bg-white rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.06)] border-2 border-slate-100/50 p-8">
+        <div className="bg-slate-900/90 rounded-3xl shadow-[0_12px_35px_rgb(0,0,0,0.45)] border-2 border-slate-700 p-8 backdrop-blur-sm">
           <form onSubmit={handleSubmit} className="space-y-4">
             {isRegister && (
               <div className="relative">
@@ -78,7 +78,7 @@ export default function LoginPage() {
                   onChange={(e) => setName(e.target.value)}
                   placeholder="Your name"
                   required
-                  className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-200 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-100 outline-none transition-all"
+                  className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-700 bg-slate-950 text-slate-100 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-900 outline-none transition-all"
                 />
               </div>
             )}
@@ -92,7 +92,7 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="Email address"
                 required
-                className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-200 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-100 outline-none transition-all"
+                className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-700 bg-slate-950 text-slate-100 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-900 outline-none transition-all"
               />
             </div>
 
@@ -105,7 +105,7 @@ export default function LoginPage() {
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="Phone number (optional)"
-                  className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-200 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-100 outline-none transition-all"
+                  className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-700 bg-slate-950 text-slate-100 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-900 outline-none transition-all"
                 />
               </div>
             )}
@@ -120,7 +120,7 @@ export default function LoginPage() {
                 placeholder="Password"
                 required
                 minLength={6}
-                className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-200 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-100 outline-none transition-all"
+                className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-700 bg-slate-950 text-slate-100 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-900 outline-none transition-all"
               />
             </div>
 
@@ -142,15 +142,15 @@ export default function LoginPage() {
           </form>
 
           <div className="my-5 flex items-center gap-3">
-            <div className="flex-1 h-px bg-slate-200" />
+            <div className="flex-1 h-px bg-slate-700" />
             <span className="text-sm font-semibold text-slate-400">OR</span>
-            <div className="flex-1 h-px bg-slate-200" />
+            <div className="flex-1 h-px bg-slate-700" />
           </div>
 
           <button
             data-testid="google-login-btn"
             onClick={handleGoogleLogin}
-            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-slate-50 text-slate-700 rounded-full py-3.5 text-base font-bold border-2 border-slate-200 hover:border-slate-300 transition-all"
+            className="w-full flex items-center justify-center gap-3 bg-slate-800 hover:bg-slate-700 text-slate-100 rounded-full py-3.5 text-base font-bold border-2 border-slate-600 hover:border-slate-500 transition-all"
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
               <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
@@ -161,7 +161,7 @@ export default function LoginPage() {
             Continue with Google
           </button>
 
-          <p className="text-center text-sm font-semibold text-slate-500 mt-5">
+          <p className="text-center text-sm font-semibold text-slate-300 mt-5">
             {isRegister ? "Already have an account?" : "Don't have an account?"}{" "}
             <button
               data-testid="toggle-auth-mode"

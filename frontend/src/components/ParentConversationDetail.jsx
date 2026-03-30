@@ -46,7 +46,7 @@ export default function ParentConversationDetail() {
 
   if (!data) {
     return (
-      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
         <div className="pulse-soft text-xl font-bold text-slate-400">Loading...</div>
       </div>
     );
@@ -55,18 +55,18 @@ export default function ParentConversationDetail() {
   const { conversation, messages, alerts } = data;
 
   return (
-    <div data-testid="parent-conversation-detail" className="min-h-screen bg-slate-50">
+    <div data-testid="parent-conversation-detail" className="min-h-screen bg-slate-950">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-xl border-b border-slate-100 px-6 py-4 flex items-center gap-4 sticky top-0 z-10">
+      <header className="bg-slate-900/80 backdrop-blur-xl border-b border-slate-700 px-6 py-4 flex items-center gap-4 sticky top-0 z-10">
         <Link
           to="/parent"
           data-testid="back-to-dashboard-link"
-          className="p-2 rounded-xl hover:bg-slate-100 transition-colors text-slate-500"
+          className="p-2 rounded-xl hover:bg-slate-800 transition-colors text-slate-400"
         >
           <ArrowLeft className="w-6 h-6" strokeWidth={2.5} />
         </Link>
         <div>
-          <h1 className="font-['Nunito'] text-xl font-bold text-slate-800">{conversation.title}</h1>
+          <h1 className="font-['Nunito'] text-xl font-bold text-slate-100">{conversation.title}</h1>
           <p className="text-sm text-slate-400 flex items-center gap-1.5">
             <Clock className="w-3.5 h-3.5" />
             {new Date(conversation.created_at).toLocaleString()} &middot; {conversation.message_count || 0} messages
@@ -83,7 +83,7 @@ export default function ParentConversationDetail() {
       <div className="max-w-4xl mx-auto px-4 md:px-8 py-8 space-y-8">
         {/* Alerts for this conversation */}
         {alerts.length > 0 && (
-          <div data-testid="conversation-alerts" className="bg-white rounded-3xl border-2 border-rose-200 p-6">
+          <div data-testid="conversation-alerts" className="bg-slate-900 rounded-3xl border-2 border-rose-800 p-6">
             <h3 className="font-['Nunito'] text-lg font-bold text-rose-700 flex items-center gap-2 mb-4">
               <AlertTriangle className="w-5 h-5" strokeWidth={2.5} />
               Alerts ({alerts.length})
@@ -95,7 +95,7 @@ export default function ParentConversationDetail() {
                   data-testid={`conv-alert-${alert.id}`}
                   className={`rounded-xl p-4 text-sm ${
                     alert.resolved
-                      ? "bg-slate-50 border border-slate-200"
+                      ? "bg-slate-900 border border-slate-700"
                       : "bg-rose-50 border border-rose-200"
                   }`}
                 >
@@ -107,12 +107,12 @@ export default function ParentConversationDetail() {
                     }`}>
                       {alert.severity?.toUpperCase()}
                     </span>
-                    <span className="text-slate-500 capitalize">{alert.type?.replace("_", " ")}</span>
+                    <span className="text-slate-400 capitalize">{alert.type?.replace("_", " ")}</span>
                     {alert.resolved && (
                       <CheckCircle className="w-4 h-4 text-emerald-500 ml-auto" />
                     )}
                   </div>
-                  <p className="text-slate-600">{alert.details}</p>
+                  <p className="text-slate-400">{alert.details}</p>
                 </div>
               ))}
             </div>
@@ -121,7 +121,7 @@ export default function ParentConversationDetail() {
 
         {/* Message thread with thoughts */}
         <div data-testid="conversation-messages" className="space-y-6">
-          <h3 className="font-['Nunito'] text-xl font-bold text-slate-800 flex items-center gap-2">
+          <h3 className="font-['Nunito'] text-xl font-bold text-slate-100 flex items-center gap-2">
             <MessageCircle className="w-6 h-6 text-sky-400" strokeWidth={2.5} />
             Conversation Log
           </h3>
@@ -129,11 +129,11 @@ export default function ParentConversationDetail() {
             <div key={msg.id || idx} data-testid={`parent-msg-${idx}`}>
               {msg.role === "user" ? (
                 <div className="flex items-start gap-3 flex-row-reverse">
-                  <div className="w-10 h-10 rounded-full bg-amber-200 flex items-center justify-center flex-shrink-0 border-2 border-white shadow-sm text-xl">
+                  <div className="w-10 h-10 rounded-full bg-amber-200 flex items-center justify-center flex-shrink-0 border-2 border-slate-700 shadow-sm text-xl">
                     <span role="img" aria-label="child">&#x1F9D2;</span>
                   </div>
                   <div className="max-w-[70%]">
-                    <div className={`bg-sky-100 text-sky-900 rounded-[2rem] rounded-br-lg p-4 text-base font-medium ${msg.blocked ? "opacity-60 line-through" : ""}`}>
+                    <div className={`bg-sky-900/40 text-sky-100 rounded-[2rem] rounded-br-lg p-4 text-base font-medium ${msg.blocked ? "opacity-60 line-through" : ""}`}>
                       {msg.text}
                       {msg.blocked && (
                         <span className="block text-sm text-rose-500 font-semibold mt-1" style={{textDecoration:'none'}}>
@@ -153,25 +153,25 @@ export default function ParentConversationDetail() {
                   <img
                     src={BOT_AVATAR}
                     alt="BuddyBot"
-                    className="w-10 h-10 rounded-full border-2 border-white shadow-sm flex-shrink-0"
+                    className="w-10 h-10 rounded-full border-2 border-slate-700 shadow-sm flex-shrink-0"
                   />
                   <div className="max-w-[70%] space-y-2">
                     {/* AI Thought (visible to parent) */}
                     {msg.thought && (
                       <div
                         data-testid={`ai-thought-${idx}`}
-                        className="bg-violet-50 border border-violet-200 rounded-xl p-3 text-sm"
+                        className="bg-violet-950/40 border border-violet-700 rounded-xl p-3 text-sm"
                       >
                         <div className="flex items-center gap-2 mb-1.5">
-                          <Brain className="w-4 h-4 text-violet-500" strokeWidth={2.5} />
-                          <span className="font-bold text-violet-700 text-xs uppercase tracking-wider">AI Thought</span>
+                          <Brain className="w-4 h-4 text-violet-300" strokeWidth={2.5} />
+                          <span className="font-bold text-violet-200 text-xs uppercase tracking-wider">AI Thought</span>
                           {msg.safety_level && <SafetyBadge level={msg.safety_level} />}
                         </div>
-                        <p className="text-violet-700 leading-relaxed">{msg.thought}</p>
+                        <p className="text-violet-200 leading-relaxed">{msg.thought}</p>
                       </div>
                     )}
                     {/* AI Response */}
-                    <div className="bg-emerald-100 text-emerald-900 rounded-[2rem] rounded-bl-lg p-4 text-base font-medium">
+                    <div className="bg-emerald-900/40 text-emerald-100 rounded-[2rem] rounded-bl-lg p-4 text-base font-medium">
                       {msg.text}
                     </div>
                   </div>

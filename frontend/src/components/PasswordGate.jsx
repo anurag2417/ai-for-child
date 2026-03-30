@@ -39,16 +39,16 @@ export default function PasswordGate({ children }) {
   return (
     <div
       data-testid="password-gate"
-      className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-100 via-white to-slate-50 px-4"
+      className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-slate-950 px-4"
     >
       <div className="w-full max-w-sm text-center">
         <div className="inline-flex items-center justify-center w-20 h-20 rounded-full bg-emerald-100 mb-5">
           <Shield className="w-10 h-10 text-emerald-500" strokeWidth={2.5} />
         </div>
-        <h2 className="font-['Nunito'] text-2xl font-extrabold text-slate-800 mb-2">
+        <h2 className="font-['Nunito'] text-2xl font-extrabold text-slate-100 mb-2">
           Parent Verification
         </h2>
-        <p className="text-base font-medium text-slate-500 mb-6">
+        <p className="text-base font-medium text-slate-300 mb-6">
           Enter your password to access the dashboard
         </p>
 
@@ -63,7 +63,7 @@ export default function PasswordGate({ children }) {
               placeholder="Enter your password"
               required
               autoFocus
-              className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-200 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-100 outline-none transition-all"
+              className="w-full pl-12 pr-4 py-3.5 rounded-full border-2 border-slate-700 bg-slate-900 text-slate-100 text-base font-medium focus:border-sky-400 focus:ring-4 focus:ring-sky-900 outline-none transition-all"
             />
           </div>
 
