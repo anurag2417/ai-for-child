@@ -173,7 +173,7 @@ export default function ParentDashboard() {
               className={`flex items-center gap-2 px-6 py-3 rounded-full text-base font-bold transition-all duration-200 ${
                 activeTab === key
                   ? "bg-sky-400 text-white shadow-[0_4px_0_0_rgba(14,165,233,0.3)]"
-                  : "bg-white text-slate-400 hover:bg-slate-800 border border-slate-200"
+                  : "bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-700"
               }`}
             >
               <TabIcon className="w-5 h-5" strokeWidth={2.5} />
@@ -433,7 +433,7 @@ export default function ParentDashboard() {
               ) : (
                 <div className="space-y-2">
                   {browsingVisits.slice(0, 15).map((v, i) => (
-                    <div key={v.id || i} data-testid={`visit-packet-${i}`} className="flex items-center gap-3 p-3 rounded-xl bg-slate-50 border border-slate-100">
+                    <div key={v.id || i} data-testid={`visit-packet-${i}`} className="flex items-center gap-3 p-3 rounded-xl bg-slate-900 border border-slate-700">
                       <Globe className="w-4 h-4 text-emerald-400 flex-shrink-0" strokeWidth={2.5} />
                       <div className="flex-1 min-w-0">
                         <p className="font-semibold text-sm text-slate-200 truncate">{v.title || v.domain}</p>

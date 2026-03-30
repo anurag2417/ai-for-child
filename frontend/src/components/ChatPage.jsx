@@ -382,7 +382,7 @@ export default function ChatPage() {
               alt="BuddyBot"
               className="w-11 h-11 rounded-full border-2 border-slate-700 shadow-md"
             />
-            <h1 className="font-['Nunito'] text-2xl font-extrabold text-sky-900 tracking-tight">
+            <h1 className="font-['Nunito'] text-2xl font-extrabold text-sky-200 tracking-tight">
               BuddyBot
             </h1>
           </div>
@@ -503,7 +503,7 @@ export default function ChatPage() {
                   alt="BuddyBot"
                   className="w-28 h-28 rounded-full border-4 border-white shadow-lg mb-6 float-animation"
                 />
-                <h2 className="font-['Nunito'] text-3xl font-extrabold text-sky-900 mb-3">
+                <h2 className="font-['Nunito'] text-3xl font-extrabold text-sky-200 mb-3">
                   Hi there, friend!
                 </h2>
                 <p className="text-lg font-medium text-slate-400 text-center max-w-md mb-6">

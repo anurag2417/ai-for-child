@@ -37,10 +37,10 @@ export default function AuthCallback() {
   }, [navigate, login]);
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-sky-100 via-white to-slate-50">
+    <div className="min-h-screen flex items-center justify-center bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-slate-950 to-slate-950">
       <div className="text-center">
         <div className="w-12 h-12 border-4 border-sky-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-        <p className="text-lg font-bold text-slate-600">Signing you in...</p>
+        <p className="text-lg font-bold text-slate-300">Signing you in...</p>
       </div>
     </div>
   );
